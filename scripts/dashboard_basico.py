@@ -163,7 +163,6 @@ def top_filmes(where: str, n: int = 15) -> pd.DataFrame:
     sql = f"""
         SELECT
             TITULO_ORIGINAL AS titulo,
-            TITULO_BRASIL AS titulo br,
             SUM(PUBLICO) AS publico,
             COUNT(*) AS sessoes
         FROM '{PARQUET_PADRAO}'
