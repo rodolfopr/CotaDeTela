@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meus Dashboards</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #f5f5f5;
+        }
+        header {
+            background: #1e1e2e;
+            color: white;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        header h1 {
+            font-size: 18px;
+            margin: 0;
+            font-weight: 600;
+        }
+        nav {
+            display: flex;
+            gap: 8px;
+        }
+        nav button {
+            background: transparent;
+            border: 1px solid #555;
+            color: #ccc;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        nav button:hover {
+            border-color: #888;
+            color: white;
+        }
+        nav button.active {
+            background: #ff4b4b;
+            border-color: #ff4b4b;
+            color: white;
+        }
+        .view {
+            display: none;
+            width: 100%;
+            height: calc(100vh - 56px);
+        }
+        .view.active {
+            display: block;
+        }
+        iframe {
+            border: none;
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Meus Dashboards</h1>
+    <nav>
+        <button class="tab-btn active" data-target="app1">Cota de Tela 1</button>
+        <button class="tab-btn" data-target="app2">Cota de Tela 2</button>
+    </nav>
+</header>
+
+<div id="app1" class="view active">
+    <iframe
+        src="https://cotadetela-fbgyaagefhmzjerpm5udvr.streamlit.app/?embed=true"
+        title="App Streamlit 1"
+        allow="clipboard-write"
+    ></iframe>
+</div>
+
+<div id="app2" class="view">
+    <iframe
+        src="https://cotadetela-jzq8hhtxngdngfadb3lumi.streamlit.app/?embed=true"
+        title="App Streamlit 2"
+        allow="clipboard-write"
+    ></iframe>
+</div>
+
+<script>
+    const buttons = document.querySelectorAll('.tab-btn');
+    const views = document.querySelectorAll('.view');
+
+    buttons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = btn.dataset.target;
+
+            buttons.forEach(b => b.classList.remove('active'));
+            views.forEach(v => v.classList.remove('active'));
+
+            btn.classList.add('active');
+            document.getElementById(target).classList.add('active');
+        });
+    });
+</script>
+
+</body>
+</html>
