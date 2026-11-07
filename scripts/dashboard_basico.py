@@ -59,13 +59,13 @@ CORES_HORA = {
 CORES_HORA_FORA = "#BDBDBD"
 
 st.set_page_config(
-    alt.themes.enable("none")
+    
     page_title="Bilheteria ANCINE",
     page_icon="🎬",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
+alt.themes.enable("none")
 
 
 # --- Formatação pt-BR ---
