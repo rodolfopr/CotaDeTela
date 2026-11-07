@@ -59,13 +59,11 @@ CORES_HORA = {
 CORES_HORA_FORA = "#BDBDBD"
 
 st.set_page_config(
-    
     page_title="Bilheteria ANCINE",
     page_icon="🎬",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-alt.themes.enable("none")
 
 
 # --- Formatação pt-BR ---
@@ -779,42 +777,32 @@ def grafico_barras_100_origem_ano(where: str, metrica: str = "Público"):
     df_long["ano_str"] = df_long["ano"].astype(int).astype(str)
 
     return (
-    alt.Chart(df_long)
-    .mark_bar()
-    .encode(
-        x=alt.X(
-            "ano_str:N",
-            title="Ano",
-            axis=alt.Axis(
-                labelAngle=0,
-                labelColor="#333333",
-                titleColor="#222222",
-                labelFontSize=12,
-                titleFontSize=13,
+        alt.Chart(df_long)
+        .mark_bar()
+        .encode(
+            x=alt.X("ano_str:N", title="Ano", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("pct:Q", title=rotulo_eixo, stack="normalize"),
+            color=alt.Color(
+                "origem:N",
+                title="Origem",
+                sort=ordem_origens,
+                scale=alt.Scale(
+                    domain=list(CORES_ORIGEM.keys()),
+                    range=list(CORES_ORIGEM.values()),
+                ),
             ),
-        ),
-        y=alt.Y(
-            "pct:Q",
-            title=rotulo_eixo,
-            stack="normalize",
-            axis=alt.Axis(
-                labelColor="#333333",
-                titleColor="#222222",
-                labelFontSize=12,
-                titleFontSize=13,
-                gridColor="#E0E0E0",
-            ),
-        ),
-        order=alt.Order("origem:N", sort="ascending"),
-        tooltip=[
-            alt.Tooltip("ano_str:N", title="Ano"),
-            alt.Tooltip("origem:N", title="Origem"),
-            alt.Tooltip("pct_fmt:N", title=f"% do {metrica.lower()} no ano"),
-            alt.Tooltip("valor_fmt:N", title=metrica),
-        ],
+            order=alt.Order("origem:N", sort="ascending"),
+            tooltip=[
+                alt.Tooltip("ano_str:N", title="Ano"),
+                alt.Tooltip("origem:N", title="Origem"),
+                alt.Tooltip("pct_fmt:N", title=f"% do {metrica.lower()} no ano"),
+                alt.Tooltip("valor_fmt:N", title=metrica),
+            ],
+        )
+        .properties(height=320)
     )
-    .properties(height=320)
-)
+
+
 def grafico_barras_empilhadas(serie: pd.DataFrame, metrica: str = "Público"):
     cols = [
         c for c in serie.columns
@@ -847,7 +835,7 @@ def grafico_barras_empilhadas(serie: pd.DataFrame, metrica: str = "Público"):
                     domain=ordem_series,
                     range=[CORES_ORIGEM[s] for s in ordem_series],
                 ),
-                legend=alt.Legend(title="Origem", labelColor="#333333", titleColor="#222222", labelFontSize=12, titleFontSize=13,),
+                legend=alt.Legend(orient="top", direction="horizontal", title=None),
             ),
             order=alt.Order("serie:N", sort="ascending"),
             tooltip=[
@@ -936,30 +924,7 @@ def render_sidebar(meta, ufs_todas):
         "exibidores": exibidores, "titulos": titulos,
         "origens": origens, "periodos": periodos, "dias": dias,
     }
-def tema_altair():
-    return {
-        "config": {
-            "axis": {
-                "labelColor": "#333333",
-                "titleColor": "#222222",
-                "gridColor": "#E0E0E0",
-                "domainColor": "#888888",
-                "tickColor": "#888888",
-            },
-            "legend": {
-                "labelColor": "#333333",
-                "titleColor": "#222222",
-            },
-            "title": {
-                "color": "#222222",
-            },
-            "view": {
-                "stroke": "transparent",
-            },
-        }
-    }
-alt.themes.register("tema_personalizado", tema_altair)
-alt.themes.enable("tema_personalizado")
+
 
 def main():
     st.title(
