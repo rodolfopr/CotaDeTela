@@ -5,19 +5,24 @@ Mesma estrutura do dashboard_basico.py, com cada seção duplicada
 lado a lado para comparar dois períodos distintos.
 
 Filtros globais (UF, Município, Complexo, Exibidor, Título, Origem,
-Período da sessão, Dia) aplicam-se aos dois lados. Apenas o período
+Faixa de horário, Dia) aplicam-se aos dois lados. Apenas o período
 (data inicial/final) é independente por lado, limitado a 2 anos.
 
 Convenções (alinhadas ao dashboard_basico.py):
   - TITULO_PTBR é a referência de título.
   - ORIGENS_ESPERADAS exclui 'Não informado' dos gráficos de origem.
-  - Cores fixas por origem e por período.
+  - Cores fixas por origem e por faixa de horário.
   - Cores nominais para hora: 12h–22h coloridas; demais em cinza.
   - KPIs em notação compacta (fmt_br_compacto).
   - Top filmes com posicao, dt_ini, dt_fim.
   - Top exibidores com posicao, n_complexos, n_estados, n_municipios.
   - Tabelas usam df_para_exibicao (strings pt-BR); no expander de
     composição há coluna pct_num numérica para o Statistics funcionar.
+  - Rótulos de PERIODO_SESSAO traduzidos apenas na visualização.
+  - Eixos Y em pt-BR via labelExpr; eixo X dinâmico (Semana/Mês/Ano).
+  - Cores de eixos/legendas controladas pelo seletor "Tema dos gráficos"
+    na sidebar (o backend não lê o tema do usuário no Streamlit Cloud).
+  - Cache (@st.cache_data) nas consultas analíticas pesadas.
 
 Estrutura:
   - Constantes e formatação no topo.
@@ -53,25 +58,36 @@ CORES_PERIODO = {
 }
 ORDEM_PERIODO = ["Madrugada", "Matutino", "Vespertino", "Noturno"]
 
+ROTULO_PERIODO = {
+    "Madrugada": "0:00-5:59",
+    "Matutino": "6:00-11:59",
+    "Vespertino": "12:00-18:59",
+    "Noturno": "19:00-23:59",
+}
+ROTULO_PARA_PERIODO = {v: k for k, v in ROTULO_PERIODO.items()}
+ORDEM_PERIODO_ROTULO = [ROTULO_PERIODO[p] for p in ORDEM_PERIODO]
+
 CORES_ORIGEM = {
     "Nacional": "#2E7D32",
     "Estrangeira": "#1565C0",
 }
+COR_TOTAL = "#616161"
 
 CORES_HORA = {
-    12: "#FFF59D",
-    13: "#FFE082",
-    14: "#FFCC80",
-    15: "#FFB74D",
-    16: "#FFA726",
-    17: "#FB8C00",
-    18: "#F57C00",
-    19: "#E65100",
-    20: "#D84315",
-    21: "#BF360C",
-    22: "#8D2B0A",
+    12: "#FFF59D", 13: "#FFE082", 14: "#FFCC80", 15: "#FFB74D",
+    16: "#FFA726", 17: "#FB8C00", 18: "#F57C00", 19: "#E65100",
+    20: "#D84315", 21: "#BF360C", 22: "#8D2B0A",
 }
 CORES_HORA_FORA = "#BDBDBD"
+
+# labelExpr apenas troca o separador; o formato vem do axis.format
+LABEL_EXPR_BR = "replace(replace(datum.label, ',', 'X'), 'X', '.')"
+LABEL_EXPR_BR_PCT = "datum.label + '%'"
+LABEL_EXPR_BR_PCT_NORM = "datum.label + '%'"
+
+FORMATO_EIXO_X = {"semana": "%d/%m/%Y", "mes": "%m/%Y", "ano": "%Y"}
+FORMATO_TOOLTIP_DATA = {"semana": "%d/%m/%Y", "mes": "%m/%Y", "ano": "%Y"}
+TITULO_EIXO_X = {"semana": "Semana", "mes": "Mês", "ano": "Ano"}
 
 MAX_DIAS_PERIODO = 366 * 2
 
@@ -81,6 +97,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# --- Cores de fonte dos gráficos (valor inicial; main() atualiza via seletor) ---
+
+COR_FONTE = "#1A1A1A"
+COR_FONTE_EIXO = COR_FONTE
+COR_FONTE_LEGENDA = COR_FONTE
 
 
 # --- Formatação pt-BR ---
@@ -150,6 +173,18 @@ def df_para_exibicao(df, colunas_numericas=None, casas: int = 0):
     return out
 
 
+def traduz_periodo_df(df: pd.DataFrame, coluna: str = "periodo") -> pd.DataFrame:
+    out = df.copy()
+    if coluna in out.columns:
+        out[coluna] = out[coluna].map(ROTULO_PERIODO).fillna(out[coluna])
+    return out
+
+
+def _formata_data_coluna(serie: pd.Series, granularidade: str) -> pd.Series:
+    fmt = FORMATO_TOOLTIP_DATA.get(granularidade, "%d/%m/%Y")
+    return pd.to_datetime(serie).dt.strftime(fmt)
+
+
 def fmt_variacao(atual, anterior, casas_pct: int = 1) -> tuple[str, str]:
     if anterior is None or pd.isna(anterior) or anterior == 0:
         return ("—", "—")
@@ -163,15 +198,23 @@ def fmt_variacao(atual, anterior, casas_pct: int = 1) -> tuple[str, str]:
 @st.cache_resource
 def get_conexao():
     con = duckdb.connect()
-    con.execute("SET memory_limit = '1GB';")
+    con.execute("SET memory_limit = '2GB';")
     con.execute("SET threads = 2;")
     con.execute("SET preserve_insertion_order = false;")
+    con.execute(
+        f"CREATE OR REPLACE VIEW bilheteria AS "
+        f"SELECT * FROM '{PARQUET_PADRAO}'"
+    )
     return con
 
 
 def query(sql: str) -> pd.DataFrame:
     con = get_conexao()
-    return con.sql(sql).df()
+    cur = con.cursor()
+    try:
+        return cur.execute(sql).df()
+    finally:
+        cur.close()
 
 
 def arquivo_existe() -> bool:
@@ -186,7 +229,7 @@ def _lista_sql(valores) -> str:
 
 @st.cache_data(show_spinner=False)
 def carrega_opcoes(_dummy: int = 0):
-    sql = f"""
+    sql = """
         SELECT
             MIN(DATA_EXIBICAO) AS dt_min,
             MAX(DATA_EXIBICAO) AS dt_max,
@@ -194,16 +237,16 @@ def carrega_opcoes(_dummy: int = 0):
             COUNT(DISTINCT MUNICIPIO_SALA_COMPLEXO) AS n_mun,
             COUNT(DISTINCT TITULO_PTBR) AS n_titulos,
             COUNT(DISTINCT CNPJ_EXIBIDORA) AS n_exibidores
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
     """
     return query(sql)
 
 
 @st.cache_data(show_spinner=False)
 def carrega_ufs(_dummy: int = 0):
-    sql = f"""
+    sql = """
         SELECT DISTINCT UF_SALA_COMPLEXO AS uf
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE UF_SALA_COMPLEXO IS NOT NULL
         ORDER BY uf
     """
@@ -215,7 +258,7 @@ def carrega_municipios(ufs):
         return []
     sql = f"""
         SELECT DISTINCT MUNICIPIO_SALA_COMPLEXO AS mun
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE UF_SALA_COMPLEXO IN ({_lista_sql(ufs)})
         ORDER BY mun
     """
@@ -229,7 +272,7 @@ def carrega_complexos(municipios=None):
     )
     sql = f"""
         SELECT DISTINCT REGISTRO_COMPLEXO, MUNICIPIO_SALA_COMPLEXO, UF_SALA_COMPLEXO
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE REGISTRO_COMPLEXO IS NOT NULL {filtro}
         ORDER BY UF_SALA_COMPLEXO, MUNICIPIO_SALA_COMPLEXO, REGISTRO_COMPLEXO
     """
@@ -245,9 +288,9 @@ def carrega_complexos(municipios=None):
 
 @st.cache_data(show_spinner=False)
 def carrega_exibidores(_dummy: int = 0):
-    sql = f"""
+    sql = """
         SELECT DISTINCT RAZAO_SOCIAL_EXIBIDORA AS exibidor
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE RAZAO_SOCIAL_EXIBIDORA IS NOT NULL
         ORDER BY exibidor
     """
@@ -256,9 +299,9 @@ def carrega_exibidores(_dummy: int = 0):
 
 @st.cache_data(show_spinner=False)
 def carrega_titulos(_dummy: int = 0):
-    sql = f"""
+    sql = """
         SELECT DISTINCT TITULO_PTBR AS titulo
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE TITULO_PTBR IS NOT NULL AND TRIM(TITULO_PTBR) <> ''
         ORDER BY titulo
     """
@@ -269,7 +312,7 @@ def carrega_titulos(_dummy: int = 0):
 def carrega_origens(_dummy: int = 0):
     sql = f"""
         SELECT DISTINCT ORIGEM_OBRA AS origem
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE ORIGEM_OBRA IN ({_lista_sql(ORIGENS_ESPERADAS)})
         ORDER BY origem
     """
@@ -278,9 +321,9 @@ def carrega_origens(_dummy: int = 0):
 
 @st.cache_data(show_spinner=False)
 def carrega_periodos(_dummy: int = 0):
-    sql = f"""
+    sql = """
         SELECT DISTINCT PERIODO_SESSAO AS periodo
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE PERIODO_SESSAO IS NOT NULL
         ORDER BY
             CASE PERIODO_SESSAO
@@ -296,9 +339,9 @@ def carrega_periodos(_dummy: int = 0):
 
 @st.cache_data(show_spinner=False)
 def carrega_dias_semana(_dummy: int = 0):
-    sql = f"""
+    sql = """
         SELECT DIASEMANA_EXIBICAO AS dia
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE DIASEMANA_EXIBICAO IS NOT NULL
         GROUP BY DIASEMANA_EXIBICAO, DIASEMANA_NUM_EXIBICAO
         ORDER BY DIASEMANA_NUM_EXIBICAO NULLS LAST
@@ -334,8 +377,9 @@ def monta_where(filtros, data_ini, data_fim) -> str:
     return " AND ".join(cond)
 
 
-# --- Consultas analíticas ---
+# --- Consultas analíticas (cacheadas) ---
 
+@st.cache_data(show_spinner=False)
 def kpis(where: str) -> dict:
     sql = f"""
         SELECT
@@ -346,28 +390,28 @@ def kpis(where: str) -> dict:
             COUNT(DISTINCT CNPJ_EXIBIDORA) AS exibidores,
             MIN(DATA_EXIBICAO) AS dt_ini,
             MAX(DATA_EXIBICAO) AS dt_fim
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
     """
     return query(sql).iloc[0].to_dict()
 
 
+@st.cache_data(show_spinner=False)
 def kpi_participacao_nacional(where: str) -> float:
     sql = f"""
         SELECT
             100.0 * SUM(CASE WHEN ORIGEM_OBRA = 'Nacional' THEN PUBLICO ELSE 0 END)
             / NULLIF(SUM(PUBLICO), 0) AS pct
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
     """
     val = query(sql).iloc[0]["pct"]
     return float(val) if val is not None else 0.0
 
 
+@st.cache_data(show_spinner=False)
 def serie_temporal_por_origem(where: str, granularidade: str) -> pd.DataFrame:
-    if granularidade == "dia":
-        expr = "DATA_EXIBICAO"
-    elif granularidade == "semana":
+    if granularidade == "semana":
         expr = "DATE_TRUNC('week', DATA_EXIBICAO)"
     elif granularidade == "mes":
         expr = "DATE_TRUNC('month', DATA_EXIBICAO)"
@@ -383,7 +427,7 @@ def serie_temporal_por_origem(where: str, granularidade: str) -> pd.DataFrame:
             SUM(CASE WHEN ORIGEM_OBRA = 'Nacional' THEN 1 ELSE 0 END) AS nacional_sessoes,
             SUM(CASE WHEN ORIGEM_OBRA = 'Estrangeira' THEN PUBLICO ELSE 0 END) AS estrangeira_publico,
             SUM(CASE WHEN ORIGEM_OBRA = 'Estrangeira' THEN 1 ELSE 0 END) AS estrangeira_sessoes
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
         GROUP BY periodo
         ORDER BY periodo
@@ -400,6 +444,7 @@ def serie_temporal_por_origem(where: str, granularidade: str) -> pd.DataFrame:
     return pd.DataFrame(out).set_index("periodo")
 
 
+@st.cache_data(show_spinner=False)
 def top_filmes(where: str, n: int = 15) -> pd.DataFrame:
     sql = f"""
         SELECT
@@ -409,7 +454,7 @@ def top_filmes(where: str, n: int = 15) -> pd.DataFrame:
             COUNT(*) AS sessoes,
             MIN(DATA_EXIBICAO) AS dt_ini,
             MAX(DATA_EXIBICAO) AS dt_fim
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
         GROUP BY TITULO_PTBR
         ORDER BY publico DESC
@@ -422,6 +467,7 @@ def top_filmes(where: str, n: int = 15) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(show_spinner=False)
 def top_exibidores(where: str, n: int = 15) -> pd.DataFrame:
     sql = f"""
         SELECT
@@ -432,7 +478,7 @@ def top_exibidores(where: str, n: int = 15) -> pd.DataFrame:
             COUNT(DISTINCT REGISTRO_COMPLEXO) AS n_complexos,
             COUNT(DISTINCT UF_SALA_COMPLEXO) AS n_estados,
             COUNT(DISTINCT MUNICIPIO_SALA_COMPLEXO) AS n_municipios
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
         GROUP BY exibidor
         ORDER BY publico DESC
@@ -445,6 +491,7 @@ def top_exibidores(where: str, n: int = 15) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(show_spinner=False)
 def por_origem(where: str) -> pd.DataFrame:
     sql = f"""
         SELECT
@@ -452,7 +499,7 @@ def por_origem(where: str) -> pd.DataFrame:
             SUM(PUBLICO) AS publico,
             COUNT(*) AS sessoes,
             COUNT(DISTINCT TITULO_PTBR) AS filmes
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
           AND ORIGEM_OBRA IN ({_lista_sql(ORIGENS_ESPERADAS)})
         GROUP BY ORIGEM_OBRA
@@ -461,6 +508,7 @@ def por_origem(where: str) -> pd.DataFrame:
     return query(sql)
 
 
+@st.cache_data(show_spinner=False)
 def por_origem_e_periodo(where: str) -> pd.DataFrame:
     sql = f"""
         SELECT
@@ -468,7 +516,7 @@ def por_origem_e_periodo(where: str) -> pd.DataFrame:
             PERIODO_SESSAO AS periodo,
             SUM(PUBLICO) AS publico,
             COUNT(*) AS sessoes
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
           AND ORIGEM_OBRA IN ({_lista_sql(ORIGENS_ESPERADAS)})
           AND PERIODO_SESSAO IN ({_lista_sql(ORDEM_PERIODO)})
@@ -478,6 +526,7 @@ def por_origem_e_periodo(where: str) -> pd.DataFrame:
     return query(sql)
 
 
+@st.cache_data(show_spinner=False)
 def por_dia_semana_por_hora(where: str) -> pd.DataFrame:
     sql = f"""
         SELECT
@@ -486,7 +535,7 @@ def por_dia_semana_por_hora(where: str) -> pd.DataFrame:
             HORA_SESSAO AS hora,
             SUM(PUBLICO) AS publico,
             COUNT(*) AS sessoes
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
           AND HORA_SESSAO IS NOT NULL
         GROUP BY DIASEMANA_EXIBICAO, DIASEMANA_NUM_EXIBICAO, HORA_SESSAO
@@ -495,6 +544,7 @@ def por_dia_semana_por_hora(where: str) -> pd.DataFrame:
     return query(sql)
 
 
+@st.cache_data(show_spinner=False)
 def por_dia_semana_origem_periodo(where: str) -> pd.DataFrame:
     sql = f"""
         SELECT
@@ -504,7 +554,7 @@ def por_dia_semana_origem_periodo(where: str) -> pd.DataFrame:
             PERIODO_SESSAO AS periodo,
             SUM(PUBLICO) AS publico,
             COUNT(*) AS sessoes
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
           AND ORIGEM_OBRA IN ({_lista_sql(ORIGENS_ESPERADAS)})
           AND PERIODO_SESSAO IN ({_lista_sql(ORDEM_PERIODO)})
@@ -522,11 +572,16 @@ def por_dia_semana_origem_periodo(where: str) -> pd.DataFrame:
     return query(sql)
 
 
+@st.cache_data(show_spinner=False)
 def tabela_detalhe(where: str, limite: int = 200) -> pd.DataFrame:
     sql = f"""
         SELECT *
-        FROM '{PARQUET_PADRAO}'
-        WHERE {where}
+        FROM (
+            SELECT *
+            FROM bilheteria
+            WHERE {where}
+            LIMIT {limite * 10}
+        )
         ORDER BY DATA_EXIBICAO DESC, PUBLICO DESC
         LIMIT {limite}
     """
@@ -537,6 +592,43 @@ def tabela_detalhe(where: str, limite: int = 200) -> pd.DataFrame:
     existentes = [c for c in prioridade if c in df.columns]
     outras = [c for c in df.columns if c not in existentes]
     return df[existentes + outras]
+
+
+# --- Eixos comuns ---
+
+def eixo_x(title: str = None, granularidade: str = None, **kwargs) -> alt.Axis:
+    if title is None and granularidade is not None:
+        title = TITULO_EIXO_X.get(granularidade, "Dimensão")
+    return alt.Axis(
+        title=title,
+        labelColor=COR_FONTE_EIXO,
+        titleColor=COR_FONTE_EIXO,
+        **kwargs,
+    )
+
+
+def eixo_y(title: str, label_expr: str = None, **kwargs) -> alt.Axis:
+    base = dict(
+        title=title,
+        labelColor=COR_FONTE_EIXO,
+        titleColor=COR_FONTE_EIXO,
+    )
+    if label_expr is not None:
+        base["labelExpr"] = label_expr
+        base["format"] = ",.0f"
+    base.update(kwargs)
+    return alt.Axis(**base)
+
+
+def legenda_origem(**kwargs) -> alt.Legend:
+    base = dict(
+        title="Origem",
+        labelColor=COR_FONTE_LEGENDA,
+        titleColor=COR_FONTE_LEGENDA,
+        symbolStrokeWidth=0,
+    )
+    base.update(kwargs)
+    return alt.Legend(**base)
 
 
 # --- Gráficos ---
@@ -562,6 +654,7 @@ def grafico_pizza_origem(df: pd.DataFrame, metrica: str = "publico", titulo: str
                 domain=list(CORES_ORIGEM.keys()),
                 range=list(CORES_ORIGEM.values()),
             ),
+            legend=legenda_origem(title=titulo),
         ),
         tooltip=[
             alt.Tooltip("categoria:N", title=titulo),
@@ -588,6 +681,8 @@ def grafico_donut_por_origem(
     if df_plot.empty:
         return None
 
+    df_plot = traduz_periodo_df(df_plot)
+
     total = df_plot[metrica].sum()
     df_plot["pct"] = df_plot[metrica] / total * 100 if total else 0
     df_plot["valor_fmt"] = df_plot[metrica].apply(lambda v: fmt_br(v, 0))
@@ -601,16 +696,22 @@ def grafico_donut_por_origem(
             theta=alt.Theta(field=metrica, type="quantitative", stack=True),
             color=alt.Color(
                 "periodo:N",
-                title="Período",
-                sort=ORDEM_PERIODO,
+                title="Faixa de horário",
+                sort=ORDEM_PERIODO_ROTULO,
                 scale=alt.Scale(
-                    domain=ORDEM_PERIODO,
+                    domain=ORDEM_PERIODO_ROTULO,
                     range=[CORES_PERIODO[p] for p in ORDEM_PERIODO],
                 ),
-                legend=alt.Legend(orient="right", title="Período"),
+                legend=alt.Legend(
+                    orient="right",
+                    title="Faixa de horário",
+                    labelColor=COR_FONTE_LEGENDA,
+                    titleColor=COR_FONTE_LEGENDA,
+                    symbolStrokeWidth=0,
+                ),
             ),
             tooltip=[
-                alt.Tooltip("periodo:N", title="Período"),
+                alt.Tooltip("periodo:N", title="Faixa de horário"),
                 alt.Tooltip("valor_fmt:N", title=rotulo_metrica),
                 alt.Tooltip("pct_fmt:N", title="% da origem"),
             ],
@@ -644,15 +745,23 @@ def grafico_barras_dia_por_hora(df: pd.DataFrame, metrica: str = "publico"):
 
     base = alt.Chart(df_plot).encode(
         x=alt.X("dia:N", title="Dia da semana", sort=ordem_dias,
-                axis=alt.Axis(labelAngle=0)),
-        y=alt.Y(f"{metrica}:Q", title=rotulo_metrica, stack="zero"),
+                axis=eixo_x("Dia da semana", labelAngle=0)),
+        y=alt.Y(f"{metrica}:Q", title=rotulo_metrica, stack="zero",
+                axis=eixo_y(rotulo_metrica, label_expr=LABEL_EXPR_BR)),
         color=alt.Color(
             "hora_cat:N",
             title="Hora da sessão",
             sort=dominio_cores,
             scale=alt.Scale(domain=dominio_cores, range=range_cores),
-            legend=alt.Legend(orient="right", title="Hora",
-                              columns=1, symbolLimit=12),
+            legend=alt.Legend(
+                orient="bottom",
+                title="Hora da sessão",
+                labelColor=COR_FONTE_LEGENDA,
+                titleColor=COR_FONTE_LEGENDA,
+                columns=6,
+                symbolLimit=12,
+                symbolStrokeWidth=0,
+            ),
         ),
         order=alt.Order("hora_int:Q", sort="ascending"),
     )
@@ -679,7 +788,7 @@ def grafico_barras_dia_por_hora(df: pd.DataFrame, metrica: str = "publico"):
 
     rotulos = (
         alt.Chart(df_foco)
-        .mark_text(fontSize=10, fontWeight="bold", color="#000000")
+        .mark_text(fontSize=10, fontWeight="bold", color=COR_FONTE)
         .encode(
             x=alt.X("dia:N", sort=ordem_dias),
             y=alt.Y("centro:Q"),
@@ -698,6 +807,8 @@ def grafico_barras_share_dia_por_periodo(
     if df_plot.empty:
         return None
 
+    df_plot = traduz_periodo_df(df_plot)
+
     df_plot["dia"] = df_plot["dia"].astype(str)
     total_dia = df_plot.groupby("dia")[metrica].transform("sum")
     df_plot["pct"] = df_plot[metrica] / total_dia.replace(0, pd.NA) * 100
@@ -713,11 +824,12 @@ def grafico_barras_share_dia_por_periodo(
         .mark_bar(stroke="#000000", strokeWidth=0.5)
         .encode(
             x=alt.X("dia:N", title="Dia da semana", sort=ordem_dias,
-                    axis=alt.Axis(labelAngle=0, labelFontSize=11)),
+                    axis=eixo_x("Dia da semana", labelAngle=0, labelFontSize=11)),
             y=alt.Y(
                 "pct:Q",
-                title=f"% do {rotulo_metrica.lower()} do dia",
+                title="% do público",
                 stack="normalize",
+                axis=eixo_y("% do público", label_expr=LABEL_EXPR_BR_PCT_NORM),
             ),
             color=alt.Color(
                 "origem:N",
@@ -727,12 +839,12 @@ def grafico_barras_share_dia_por_periodo(
                     domain=["Nacional", "Estrangeira"],
                     range=[CORES_ORIGEM["Nacional"], CORES_ORIGEM["Estrangeira"]],
                 ),
-                legend=alt.Legend(orient="top", direction="horizontal", title=None),
+                legend=legenda_origem(orient="top", direction="horizontal", title=None),
             ),
             order=alt.Order("origem:N", sort="ascending"),
             tooltip=[
                 alt.Tooltip("dia:N", title="Dia"),
-                alt.Tooltip("periodo:N", title="Período"),
+                alt.Tooltip("periodo:N", title="Faixa de horário"),
                 alt.Tooltip("origem:N", title="Origem"),
                 alt.Tooltip("pct_fmt:N", title="% do dia"),
                 alt.Tooltip("valor_fmt:N", title=rotulo_metrica),
@@ -746,9 +858,9 @@ def grafico_barras_share_dia_por_periodo(
 def grafico_barras_100_origem_ano(where: str, metrica: str = "Público"):
     expr_metrica = "PUBLICO" if metrica == "Público" else "1"
     rotulo_eixo = (
-        "% do público por origem"
+        "% do público"
         if metrica == "Público"
-        else "% das sessões por origem"
+        else "% das sessões"
     )
 
     sql = f"""
@@ -756,7 +868,7 @@ def grafico_barras_100_origem_ano(where: str, metrica: str = "Público"):
             EXTRACT(YEAR FROM DATA_EXIBICAO) AS ano,
             ORIGEM_OBRA AS origem,
             SUM({expr_metrica}) AS valor
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where}
           AND ORIGEM_OBRA IN ({_lista_sql(ORIGENS_ESPERADAS)})
         GROUP BY EXTRACT(YEAR FROM DATA_EXIBICAO), ORIGEM_OBRA
@@ -779,8 +891,13 @@ def grafico_barras_100_origem_ano(where: str, metrica: str = "Público"):
         alt.Chart(df_long)
         .mark_bar()
         .encode(
-            x=alt.X("ano_str:N", title="Ano", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("pct:Q", title=rotulo_eixo, stack="normalize"),
+            x=alt.X("ano_str:N", title="Ano", axis=eixo_x("Ano", labelAngle=0)),
+            y=alt.Y(
+                "pct:Q",
+                title=rotulo_eixo,
+                stack="normalize",
+                axis=eixo_y(rotulo_eixo, label_expr=LABEL_EXPR_BR_PCT_NORM),
+            ),
             color=alt.Color(
                 "origem:N",
                 title="Origem",
@@ -789,6 +906,7 @@ def grafico_barras_100_origem_ano(where: str, metrica: str = "Público"):
                     domain=list(CORES_ORIGEM.keys()),
                     range=list(CORES_ORIGEM.values()),
                 ),
+                legend=legenda_origem(orient="bottom", direction="horizontal"),
             ),
             order=alt.Order("origem:N", sort="ascending"),
             tooltip=[
@@ -802,7 +920,63 @@ def grafico_barras_100_origem_ano(where: str, metrica: str = "Público"):
     )
 
 
-def grafico_barras_empilhadas(serie: pd.DataFrame, metrica: str = "Público"):
+def grafico_linha_evolucao(
+    serie: pd.DataFrame,
+    metrica: str = "Público",
+    granularidade: str = "mes",
+):
+    cols = [c for c in serie.columns if c.endswith(f"— {metrica}")]
+    df_long = serie[cols].reset_index().melt(
+        id_vars="periodo", var_name="serie", value_name="valor",
+    )
+    df_long["serie"] = df_long["serie"].str.replace(f" — {metrica}", "", regex=False)
+    df_long = df_long.rename(columns={"periodo": "data"})
+
+    df_long["valor_fmt"] = df_long["valor"].apply(lambda v: fmt_br(v, 0))
+    df_long["data_fmt"] = _formata_data_coluna(df_long["data"], granularidade)
+
+    zoom = alt.selection_interval(bind="scales", encodings=["x"])
+    ordem_series = ["Total", "Nacional", "Estrangeira"]
+    cores_series = {
+        "Total": COR_TOTAL,
+        "Nacional": CORES_ORIGEM["Nacional"],
+        "Estrangeira": CORES_ORIGEM["Estrangeira"],
+    }
+    formato_x = FORMATO_EIXO_X.get(granularidade, "%d/%m/%Y")
+
+    return (
+        alt.Chart(df_long)
+        .mark_line(point=True, strokeWidth=2.5)
+        .encode(
+            x=alt.X("data:T", axis=eixo_x(granularidade=granularidade, format=formato_x)),
+            y=alt.Y("valor:Q", title=metrica,
+                    axis=eixo_y(metrica, label_expr=LABEL_EXPR_BR)),
+            color=alt.Color(
+                "serie:N",
+                title="Origem",
+                sort=ordem_series,
+                scale=alt.Scale(
+                    domain=ordem_series,
+                    range=[cores_series[s] for s in ordem_series],
+                ),
+                legend=legenda_origem(orient="bottom", direction="horizontal"),
+            ),
+            tooltip=[
+                alt.Tooltip("data_fmt:N", title="Data"),
+                alt.Tooltip("serie:N", title="Série"),
+                alt.Tooltip("valor_fmt:N", title=metrica),
+            ],
+        )
+        .add_params(zoom)
+        .properties(height=360)
+    )
+
+
+def grafico_barras_empilhadas(
+    serie: pd.DataFrame,
+    metrica: str = "Público",
+    granularidade: str = "mes",
+):
     cols = [
         c for c in serie.columns
         if c.endswith(f"— {metrica}") and not c.startswith("Total")
@@ -811,21 +985,22 @@ def grafico_barras_empilhadas(serie: pd.DataFrame, metrica: str = "Público"):
         id_vars="periodo", var_name="serie", value_name="valor",
     )
     df_long["serie"] = df_long["serie"].str.replace(f" — {metrica}", "", regex=False)
+    df_long = df_long.rename(columns={"periodo": "data"})
 
-    total_periodo = df_long.groupby("periodo")["valor"].transform("sum")
-    df_long["pct"] = df_long["valor"] / total_periodo.replace(0, pd.NA) * 100
     df_long["valor_fmt"] = df_long["valor"].apply(lambda v: fmt_br(v, 0))
-    df_long["pct_fmt"] = df_long["pct"].apply(lambda v: fmt_br_pct(v, 1))
+    df_long["data_fmt"] = _formata_data_coluna(df_long["data"], granularidade)
 
     ordem_series = ["Nacional", "Estrangeira"]
     zoom = alt.selection_interval(bind="scales", encodings=["x"])
+    formato_x = FORMATO_EIXO_X.get(granularidade, "%d/%m/%Y")
 
     return (
         alt.Chart(df_long)
         .mark_bar()
         .encode(
-            x=alt.X("periodo:T", title="Período"),
-            y=alt.Y("valor:Q", title=metrica, stack="zero"),
+            x=alt.X("data:T", axis=eixo_x(granularidade=granularidade, format=formato_x)),
+            y=alt.Y("valor:Q", title=metrica, stack="zero",
+                    axis=eixo_y(metrica, label_expr=LABEL_EXPR_BR)),
             color=alt.Color(
                 "serie:N",
                 title="Origem",
@@ -834,14 +1009,13 @@ def grafico_barras_empilhadas(serie: pd.DataFrame, metrica: str = "Público"):
                     domain=ordem_series,
                     range=[CORES_ORIGEM[s] for s in ordem_series],
                 ),
-                legend=alt.Legend(orient="top", direction="horizontal", title=None),
+                legend=legenda_origem(orient="bottom", direction="horizontal"),
             ),
             order=alt.Order("serie:N", sort="ascending"),
             tooltip=[
-                alt.Tooltip("periodo:T", title="Período", format="%d/%m/%Y"),
-                alt.Tooltip("serie:N", title="Origem"),
+                alt.Tooltip("data_fmt:N", title="Data"),
+                alt.Tooltip("serie:N", title="Série"),
                 alt.Tooltip("valor_fmt:N", title=metrica),
-                alt.Tooltip("pct_fmt:N", title="% do período"),
             ],
         )
         .add_params(zoom)
@@ -849,10 +1023,11 @@ def grafico_barras_empilhadas(serie: pd.DataFrame, metrica: str = "Público"):
     )
 
 
-# --- Sidebar (filtros globais) ---
+# --- Sidebar (filtros globais + tema dos gráficos) ---
 
 def render_sidebar(meta, ufs_todas):
     st.sidebar.title("🎬 Filtros globais")
+    st.sidebar.markdown("---")
 
     st.sidebar.subheader("Localização")
     ufs = st.sidebar.multiselect("UF", options=ufs_todas, default=[])
@@ -890,11 +1065,12 @@ def render_sidebar(meta, ufs_todas):
         help="Deixe em branco para incluir todas as origens.",
     )
 
-    st.sidebar.subheader("Período da sessão")
-    periodos = st.sidebar.multiselect(
-        "Período", options=carrega_periodos(), default=[],
-        help="Deixe em branco para incluir todos os períodos.",
+    st.sidebar.subheader("Faixa de horário")
+    periodos_rotulos = st.sidebar.multiselect(
+        "Faixa de horário", options=ORDEM_PERIODO_ROTULO, default=[],
+        help="Deixe em branco para incluir todas as faixas.",
     )
+    periodos = [ROTULO_PARA_PERIODO.get(r, r) for r in periodos_rotulos]
 
     st.sidebar.subheader("Dia da semana")
     dias = st.sidebar.multiselect(
@@ -908,7 +1084,20 @@ def render_sidebar(meta, ufs_todas):
         f"**{meta['n_uf']}** UFs · "
         f"**{meta['n_exibidores']:,}** exibidores"
     )
-
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Tema dos gráficos")
+    st.sidebar.radio(
+        "Cores de eixos e legendas",
+        options=["Claro", "Escuro"],
+        index=0,
+        horizontal=True,
+        key="tema_graficos",
+        help=(
+            "Ajusta as cores de eixos e legendas dos gráficos ao tema do app. "
+            "O Streamlit Cloud não expõe ao backend o tema escolhido no menu, "
+            "por isso o ajuste é manual."
+        ),
+    )
     return {
         "ufs": ufs, "municipios": municipios, "complexos": complexos,
         "exibidores": exibidores, "titulos": titulos, "origens": origens,
@@ -954,81 +1143,96 @@ def render_periodo_lado(lado: str, dt_min, dt_max, default_ini, default_fim):
 def render_serie_lado(where: str, lado: str):
     col1, col2 = st.columns(2)
     with col1:
-        gran = st.radio(
-            "Granularidade", options=["dia", "semana", "mes", "ano"],
-            index=2, horizontal=True, key=f"gran_{lado}",
-        )
-    with col2:
         metrica = st.radio(
-            "Métrica (eixo Y)", options=["Público", "Sessões"],
+            "Métrica", options=["Público", "Sessões"],
             index=0, horizontal=True, key=f"metrica_serie_{lado}",
         )
+    with col2:
+        gran = st.radio(
+            "Unidade da Dimensão", options=["semana", "mes", "ano"],
+            index=1, horizontal=True, key=f"gran_{lado}",
+        )
+
     serie = serie_temporal_por_origem(where, gran)
     if serie.empty:
         st.info("Sem dados.")
-        return None, metrica
+        return
 
-    cols = [c for c in serie.columns if c.endswith(f"— {metrica}")]
-    df_plot = serie[cols].copy()
-    df_plot.columns = [c.replace(f" — {metrica}", "") for c in df_plot.columns]
-    st.line_chart(df_plot, height=260)
-    return serie, metrica
+    st.altair_chart(
+        grafico_linha_evolucao(serie, metrica, gran),
+        use_container_width=True,
+    )
+
+    with st.expander("Ver tabela detalhada"):
+        cols = [c for c in serie.columns if c.endswith(f"— {metrica}")]
+        df_tab = serie[cols].reset_index().rename(columns={"periodo": "data"})
+        df_tab.columns = [c.replace(f" — {metrica}", "") for c in df_tab.columns]
+        df_tab["data"] = _formata_data_coluna(df_tab["data"], gran)
+        st.dataframe(
+            df_para_exibicao(df_tab,
+                             colunas_numericas=[c for c in df_tab.columns if c != "data"],
+                             casas=0),
+            use_container_width=True, hide_index=True,
+        )
 
 
 def render_barras_tempo_lado(where: str, lado: str):
     col1, col2 = st.columns(2)
     with col1:
-        gran = st.radio(
-            "Granularidade", options=["dia", "semana", "mes", "ano"],
-            index=2, horizontal=True, key=f"gran_b_{lado}",
-        )
-    with col2:
         metrica = st.radio(
-            "Métrica (eixo Y)", options=["Público", "Sessões"],
+            "Métrica", options=["Público", "Sessões"],
             index=0, horizontal=True, key=f"metrica_b_{lado}",
         )
+    with col2:
+        gran = st.radio(
+            "Unidade da Dimensão", options=["semana", "mes", "ano"],
+            index=1, horizontal=True, key=f"gran_b_{lado}",
+        )
+
     serie = serie_temporal_por_origem(where, gran)
     if serie.empty:
         st.info("Sem dados.")
         return
+
     st.altair_chart(
-        grafico_barras_empilhadas(serie, metrica),
+        grafico_barras_empilhadas(serie, metrica, gran),
         use_container_width=True,
     )
-    with st.expander("Ver tabela das barras"):
+
+    with st.expander("Ver tabela detalhada"):
         cols = [c for c in serie.columns
                 if c.endswith(f"— {metrica}") and not c.startswith("Total")]
+        df_tab = serie[cols].reset_index().rename(columns={"periodo": "data"})
+        df_tab.columns = [c.replace(f" — {metrica}", "") for c in df_tab.columns]
+        df_tab["data"] = _formata_data_coluna(df_tab["data"], gran)
         st.dataframe(
-            df_para_exibicao(serie[cols].reset_index(),
-                             colunas_numericas=cols, casas=0),
+            df_para_exibicao(df_tab,
+                             colunas_numericas=[c for c in df_tab.columns if c != "data"],
+                             casas=0),
             use_container_width=True, hide_index=True,
         )
 
 
 def render_composicao_lado(where: str, lado: str):
     metrica = st.radio(
-        "Métrica (eixo Y)", options=["Público", "Sessões"],
-        index=0, horizontal=False, key=f"metrica_comp_{lado}",
+        "Métrica", options=["Público", "Sessões"],
+        index=0, horizontal=True, key=f"metrica_comp_{lado}",
     )
-    st.markdown(
-        f"**Composição percentual "
-        f"{'do público' if metrica == 'Público' else 'das sessões'} "
-        f"por origem (por ano)**"
-    )
+
     fig = grafico_barras_100_origem_ano(where, metrica)
     if fig is None:
         st.info("Sem dados.")
         return
     st.altair_chart(fig, use_container_width=True)
 
-    with st.expander("Ver tabela da composição percentual"):
+    with st.expander("Ver tabela detalhada"):
         expr = "PUBLICO" if metrica == "Público" else "1"
         sql_comp = f"""
             SELECT
                 EXTRACT(YEAR FROM DATA_EXIBICAO) AS ano,
                 ORIGEM_OBRA AS origem,
                 SUM({expr}) AS valor
-            FROM '{PARQUET_PADRAO}'
+            FROM bilheteria
             WHERE {where}
               AND ORIGEM_OBRA IN ({_lista_sql(ORIGENS_ESPERADAS)})
             GROUP BY EXTRACT(YEAR FROM DATA_EXIBICAO), ORIGEM_OBRA
@@ -1122,11 +1326,12 @@ def render_periodo_sessao_lado(where: str, lado: str):
                     key=lambda s: s.map({p: i for i, p in enumerate(ORDEM_PERIODO)}),
                 )
             )
+            df_tab = traduz_periodo_df(df_tab)
             st.dataframe(
                 df_para_exibicao(df_tab, ["publico", "sessoes"]),
                 use_container_width=True, hide_index=True,
                 column_config={
-                    "periodo": "Período",
+                    "periodo": "Faixa de horário",
                     "publico": st.column_config.TextColumn("Público"),
                     "sessoes": st.column_config.TextColumn("Sessões"),
                 },
@@ -1147,11 +1352,12 @@ def render_periodo_sessao_lado(where: str, lado: str):
                     key=lambda s: s.map({p: i for i, p in enumerate(ORDEM_PERIODO)}),
                 )
             )
+            df_tab = traduz_periodo_df(df_tab)
             st.dataframe(
                 df_para_exibicao(df_tab, ["publico", "sessoes"]),
                 use_container_width=True, hide_index=True,
                 column_config={
-                    "periodo": "Período",
+                    "periodo": "Faixa de horário",
                     "publico": st.column_config.TextColumn("Público"),
                     "sessoes": st.column_config.TextColumn("Sessões"),
                 },
@@ -1172,7 +1378,7 @@ def render_dia_hora_lado(where: str, lado: str):
     )
     df_sem = query(f"""
         SELECT COUNT(*) AS n
-        FROM '{PARQUET_PADRAO}'
+        FROM bilheteria
         WHERE {where} AND HORA_SESSAO IS NULL
     """)
     n_sem = int(df_sem.iloc[0]["n"]) if not df_sem.empty else 0
@@ -1185,7 +1391,7 @@ def render_dia_hora_lado(where: str, lado: str):
         grafico_barras_dia_por_hora(df, metrica),
         use_container_width=True,
     )
-    with st.expander("Ver tabela detalhada (dia × hora)"):
+    with st.expander("Ver tabela detalhada"):
         df_tab = df.copy()
         df_tab["hora"] = df_tab["hora"].apply(lambda h: f"{int(h):02d}h")
         df_tab = df_tab.drop(columns=["dia_num"])
@@ -1210,23 +1416,18 @@ def render_dia_share_lado(where: str, lado: str):
         )
     with col2:
         periodo = st.radio(
-            "Período", options=ORDEM_PERIODO,
+            "Faixa de horário", options=ORDEM_PERIODO,
+            format_func=lambda p: ROTULO_PERIODO.get(p, p),
             index=2, horizontal=True, key=f"periodo_share_{lado}",
         )
-
-    st.caption(
-        f"Share de **{metrica.replace('publico', 'público').replace('sessoes', 'sessões')}** "
-        f"no período **{periodo}**, por dia da semana. Cada barra "
-        f"soma 100% dentro do dia."
-    )
 
     fig = grafico_barras_share_dia_por_periodo(df, periodo, metrica)
     if fig is not None:
         st.altair_chart(fig, use_container_width=True)
     else:
-        st.info("Sem dados para o período selecionado.")
+        st.info("Sem dados para a faixa selecionada.")
 
-    with st.expander(f"Ver tabela detalhada ({periodo} · dia · origem)"):
+    with st.expander("Ver tabela detalhada"):
         df_tab = (
             df[df["periodo"] == periodo]
             .drop(columns=["dia_num", "periodo"])
@@ -1329,6 +1530,14 @@ def bloco_lado_a_lado(subheader, render_fn, where_a, where_b):
 # --- Main ---
 
 def main():
+    global COR_FONTE, COR_FONTE_EIXO, COR_FONTE_LEGENDA
+
+    # Atualiza as cores dos gráficos conforme o seletor da sidebar
+    tema_graficos = st.session_state.get("tema_graficos", "Claro")
+    COR_FONTE = "#1A1A1A" if tema_graficos == "Claro" else "#FFFFFF"
+    COR_FONTE_EIXO = COR_FONTE
+    COR_FONTE_LEGENDA = COR_FONTE
+
     st.title("🆚 Estudo Exploratório — Comparação de Períodos")
     st.caption(
         "Comparação lado a lado de dois períodos (máx. 2 anos cada) da "
@@ -1346,6 +1555,12 @@ def main():
     dt_max = pd.to_datetime(meta["dt_max"]).date()
 
     filtros = render_sidebar(meta, ufs_todas)
+
+    # Reaplica o tema após o render_sidebar (o widget pode ter sido criado agora)
+    tema_graficos = st.session_state.get("tema_graficos", "Claro")
+    COR_FONTE = "#1A1A1A" if tema_graficos == "Claro" else "#FFFFFF"
+    COR_FONTE_EIXO = COR_FONTE
+    COR_FONTE_LEGENDA = COR_FONTE
 
     # --- Seleção dos dois períodos ---
     st.markdown("---")
@@ -1414,19 +1629,19 @@ def main():
 
     # --- Blocos lado a lado ---
     bloco_lado_a_lado(
-        "📈 Evolução do público e das sessões",
+        "📈 Evolução do público ou sessões",
         render_serie_lado, where_a, where_b,
     )
     st.markdown("---")
 
     bloco_lado_a_lado(
-        "📊 Quantidade de público e sessões por medida de tempo",
+        "📊 Quantidade de público ou sessões por dimensão de tempo",
         render_barras_tempo_lado, where_a, where_b,
     )
     st.markdown("---")
 
     bloco_lado_a_lado(
-        "📊 Composição percentual por origem da obra (por ano)",
+        "📊 Percentual por origem da obra (por ano)",
         render_composicao_lado, where_a, where_b,
     )
     st.markdown("---")
@@ -1438,19 +1653,19 @@ def main():
     st.markdown("---")
 
     bloco_lado_a_lado(
-        "🕒 Público por período da sessão",
+        "🕒 Público ou sessões por faixa de horário",
         render_periodo_sessao_lado, where_a, where_b,
     )
     st.markdown("---")
 
     bloco_lado_a_lado(
-        "📅 Público por dia da semana (empilhado por hora da sessão)",
+        "📅 Público por dia da semana empilhado por hora da sessão",
         render_dia_hora_lado, where_a, where_b,
     )
     st.markdown("---")
 
     bloco_lado_a_lado(
-        "📅 Share por período da sessão — dia da semana",
+        "📅 Percentual do público por faixa de horário e dia da semana",
         render_dia_share_lado, where_a, where_b,
     )
     st.markdown("---")
