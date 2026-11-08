@@ -1,13 +1,22 @@
 """
-Executa os scripts do projeto na ordem correta e, ao final,
-sobe o dashboard Streamlit.
+Script de instalação / preparação do projeto CotaDeTela.
+
+Executa os scripts na ordem correta:
+  1. baixa os dados de bilheteria da ANCINE
+  2. carrega e lista os CSVs
+  3. verifica o schema dos arquivos
+  4. consolida tudo em data/bilheteria.parquet
+
+Após a execução, o dashboard pode ser iniciado manualmente com:
+    streamlit run scripts/dashboard_basico.py
 """
 
 import subprocess
 import sys
 from pathlib import Path
 
-PASTA_SRC = Path(__file__).resolve().parent / "scripts"
+PASTA_RAIZ = Path(__file__).resolve().parent
+PASTA_SRC = PASTA_RAIZ / "scripts"
 
 SCRIPTS = [
     "baixa_arquivos.py",
@@ -29,19 +38,18 @@ def roda_script(nome):
         sys.exit(resultado.returncode)
 
 
-def roda_dashboard():
-    dashboard = PASTA_SRC / "dashboard_basico.py"
-    print(f"\n{'=' * 60}")
-    print(f"  Subindo: dashboard_basico.py")
-    print(f"{'=' * 60}\n")
+def main():
+    print("Iniciando instalação / preparação dos dados...\n")
 
-    subprocess.run(
-        [sys.executable, "-m", "streamlit", "run", str(dashboard)],
-    )
-
-
-if __name__ == "__main__":
     for script in SCRIPTS:
         roda_script(script)
 
-    roda_dashboard()
+    print(f"\n{'=' * 60}")
+    print("  Instalação concluída com sucesso!")
+    print("  Para abrir o dashboard, execute:")
+    print("    streamlit run scripts/dashboard_basico.py")
+    print(f"{'=' * 60}\n")
+
+
+if __name__ == "__main__":
+    main()
