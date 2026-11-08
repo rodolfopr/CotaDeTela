@@ -9,6 +9,9 @@ Correções desta revisão:
       * Gráfico de barras empilhadas: eixo Y numérico com format ',.0f' +
         labelExpr apenas para trocar separador.
   - Título do eixo X dinâmico (Semana / Mês / Ano).
+  - Cores de fonte dos gráficos (eixos, legendas, mark_text) controladas por
+    um seletor na sidebar ("Tema dos gráficos": Claro / Escuro), já que o
+    backend não consegue ler o tema escolhido pelo usuário no Streamlit Cloud.
 """
 
 from pathlib import Path
@@ -34,10 +37,10 @@ CORES_PERIODO = {
 ORDEM_PERIODO = ["Madrugada", "Matutino", "Vespertino", "Noturno"]
 
 ROTULO_PERIODO = {
-    "Madrugada": "0h - 5h59min",
-    "Matutino": "6h - 11h59min",
-    "Vespertino": "12h - 18h59min",
-    "Noturno": "19h - 23h59min",
+    "Madrugada": "0:00 - 5:59",
+    "Matutino": "6:00 - 11:59",
+    "Vespertino": "12:00 - 18:59",
+    "Noturno": "19:00 - 23:59",
 }
 ROTULO_PARA_PERIODO = {v: k for k, v in ROTULO_PERIODO.items()}
 ORDEM_PERIODO_ROTULO = [ROTULO_PERIODO[p] for p in ORDEM_PERIODO]
@@ -55,10 +58,6 @@ CORES_HORA = {
 }
 CORES_HORA_FORA = "#BDBDBD"
 
-COR_FONTE = "#1A1A1A"
-COR_FONTE_EIXO = "#1A1A1A"
-COR_FONTE_LEGENDA = "#1A1A1A"
-
 # labelExpr apenas troca o separador; o formato vem do axis.format
 LABEL_EXPR_BR = "replace(replace(datum.label, ',', 'X'), 'X', '.')"
 LABEL_EXPR_BR_PCT = "datum.label + '%'"
@@ -74,6 +73,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# --- Cores de fonte dos gráficos (valor inicial; main() atualiza via seletor) ---
+
+COR_FONTE = "#1A1A1A"
+COR_FONTE_EIXO = COR_FONTE
+COR_FONTE_LEGENDA = COR_FONTE
 
 
 # --- Formatação pt-BR ---
@@ -573,7 +579,7 @@ def eixo_y(title: str, label_expr: str = None, **kwargs) -> alt.Axis:
     )
     if label_expr is not None:
         base["labelExpr"] = label_expr
-        base["format"] = ",.0f"   # força inteiro en-US antes do labelExpr
+        base["format"] = ",.0f"
     base.update(kwargs)
     return alt.Axis(**base)
 
@@ -899,6 +905,9 @@ def grafico_barras_empilhadas(serie, metrica="Público", granularidade="mes"):
 
 def render_sidebar(meta, ufs_todas):
     st.sidebar.title("🎬 Filtros")
+
+    st.sidebar.markdown("---")
+
     dt_min = pd.to_datetime(meta["dt_min"]).date()
     dt_max = pd.to_datetime(meta["dt_max"]).date()
     st.sidebar.subheader("Período")
@@ -950,6 +959,21 @@ def render_sidebar(meta, ufs_todas):
         f"**{meta['n_uf']}** UFs · "
         f"**{meta['n_exibidores']:,}** exibidores"
     )
+    # Seletor de tema dos gráficos (ajusta eixos/legendas ao tema do app)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Tema dos gráficos")
+    st.sidebar.radio(
+        "Cores de eixos e legendas",
+        options=["Claro", "Escuro"],
+        index=0,
+        horizontal=True,
+        key="tema_graficos",
+        help=(
+            "Ajusta as cores de eixos e legendas dos gráficos ao tema do app. "
+            "O Streamlit Cloud não expõe ao backend o tema escolhido no menu, "
+            "por isso o ajuste é manual."
+        ),
+    )
     return {
         "data_ini": data_ini, "data_fim": data_fim, "ufs": ufs,
         "municipios": municipios, "complexos": complexos,
@@ -959,6 +983,14 @@ def render_sidebar(meta, ufs_todas):
 
 
 def main():
+    global COR_FONTE, COR_FONTE_EIXO, COR_FONTE_LEGENDA
+
+    # Atualiza as cores dos gráficos conforme o seletor da sidebar
+    tema_graficos = st.session_state.get("tema_graficos", "Claro")
+    COR_FONTE = "#1A1A1A" if tema_graficos == "Claro" else "#FFFFFF"
+    COR_FONTE_EIXO = COR_FONTE
+    COR_FONTE_LEGENDA = COR_FONTE
+
     st.title(
         "Estudo Exploratório sobre Exibição de Filmes em salas de cinema no "
         "Brasil e a aplicação de Cota de Telas"
@@ -992,6 +1024,12 @@ def main():
     ufs_todas = carrega_ufs()
     filtros = render_sidebar(meta, ufs_todas)
     where = monta_where(filtros)
+
+    # Reaplica o tema após o render_sidebar (o widget pode ter sido criado agora)
+    tema_graficos = st.session_state.get("tema_graficos", "Claro")
+    COR_FONTE = "#1A1A1A" if tema_graficos == "Claro" else "#FFFFFF"
+    COR_FONTE_EIXO = COR_FONTE
+    COR_FONTE_LEGENDA = COR_FONTE
 
     k = kpis(where)
     pct_nacional = kpi_participacao_nacional(where)
