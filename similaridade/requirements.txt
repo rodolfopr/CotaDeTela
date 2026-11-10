@@ -1,0 +1,12 @@
+# --- Manipulação de dados ---
+pandas>=2.0
+pyarrow>=14.0          # backend do to_parquet/read_parquet
+
+# --- Banco de dados analítico ---
+duckdb>=0.10
+
+# --- API do TMDb ---
+tmdbsimple>=2.9
+
+# --- Interface web (CRUD) ---
+streamlit>=1.35
