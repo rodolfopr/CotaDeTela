@@ -10,3 +10,6 @@ tmdbsimple>=2.9
 
 # --- Interface web (CRUD) ---
 streamlit>=1.35
+
+# --- Biblioteca de análise de dados ---
+sklearn>=1.9.1
