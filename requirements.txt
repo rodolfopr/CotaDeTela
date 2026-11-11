@@ -37,3 +37,4 @@ uvicorn==0.54.0
 watchdog==6.0.0
 websockets==17.2
 tmdbsimple==2.9.8
+sklearn>=1.9.1
