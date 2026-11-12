@@ -27,6 +27,7 @@ python-multipart==0.0.32
 referencing==0.37.0
 requests==2.34.2
 rpds-py==2026.9.1
+scikit-learn==1.9.1
 six==1.17.0
 starlette==1.7.0
 streamlit==1.65.0
@@ -37,4 +38,3 @@ uvicorn==0.54.0
 watchdog==6.0.0
 websockets==17.2
 tmdbsimple==2.9.8
-sklearn>=1.9.1
