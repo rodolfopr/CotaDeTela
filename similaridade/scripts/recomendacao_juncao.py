@@ -1,6 +1,6 @@
 """
 Recomendador de Filmes Nacionais — app Streamlit em arquivo único.
-Consulta via combobox (selectbox); similares atrás do botão "Ver similares".
+Ao escolher um filme no combobox, o card e os similares aparecem imediatamente.
 """
 
 import os
@@ -92,7 +92,7 @@ def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
 
 st.set_page_config(page_title="Recomendador de Filmes Nacionais", layout="centered")
 st.title("Sistema de Recomendação de Filmes Nacionais")
-st.write("Escolha um filme brasileiro e clique em **Pesquisar**.")
+st.write("Escolha um filme brasileiro para ver seus dados e os similares.")
 
 
 @st.cache_data
@@ -108,38 +108,27 @@ with st.spinner("Carregando base de dados e calculando similaridades..."):
     df_filmes, matriz_sim = carregar_dados_com_cache()
 
 
-# --- Inicializa estado ---
-if "similares_abertos" not in st.session_state:
-    st.session_state["similares_abertos"] = set()
-
-
-# --- Combobox + botão Pesquisar ---
+# --- Combobox ---
 titulos_disponiveis = sorted(df_filmes["titulo_exibicao"].dropna().unique())
 
-col_select, col_botao = st.columns([4, 1])
-with col_select:
-    filme_selecionado = st.selectbox(
-        "Filme:",
-        options=titulos_disponiveis,
-        index=None,
-        placeholder="Digite ou selecione um filme...",
-        label_visibility="collapsed",
-    )
-with col_botao:
-    pesquisar = st.button("Pesquisar", type="primary", width="stretch")
+filme_selecionado = st.selectbox(
+    "Filme:",
+    options=titulos_disponiveis,
+    index=None,
+    placeholder="Digite ou selecione um filme...",
+)
 
 
-# --- Resultado (só após clicar em Pesquisar) ---
-if pesquisar and filme_selecionado:
-    # Nova pesquisa: fecha similares abertos anteriormente
-    st.session_state["similares_abertos"] = set()
-
+# --- Resultado imediato ao escolher ---
+if filme_selecionado:
     filme = obter_detalhes_filme(filme_selecionado, df_filmes)
     if filme is None:
         st.error("Filme não encontrado na base.")
         st.stop()
 
     st.divider()
+
+    # Card do filme selecionado
     with st.container(border=True):
         col_img, col_txt = st.columns([1, 3])
         with col_img:
@@ -154,29 +143,21 @@ if pesquisar and filme_selecionado:
             else:
                 st.info("Sinopse não disponível para este filme.")
 
-    # --- Botão Ver similares (toggle) ---
-    if st.button("Ver similares", key=f"ver_{filme_selecionado}"):
-        if filme_selecionado in st.session_state["similares_abertos"]:
-            st.session_state["similares_abertos"].discard(filme_selecionado)
-        else:
-            st.session_state["similares_abertos"].add(filme_selecionado)
-        st.rerun()
+    # Similares (sempre visíveis após a escolha)
+    recs = recomendar_filmes(filme_selecionado, df_filmes, matriz_sim, top_n=5)
 
-    # --- Similares (só se o botão foi acionado) ---
-    if filme_selecionado in st.session_state["similares_abertos"]:
-        recs = recomendar_filmes(filme_selecionado, df_filmes, matriz_sim, top_n=5)
-        if not recs:
-            st.warning("Não foi possível gerar recomendações para este filme.")
-        else:
-            st.markdown("**Filmes Recomendados (Mais Similares):**")
-            for i, rec in enumerate(recs, 1):
-                with st.container(border=True):
-                    col_img, col_txt = st.columns([1, 3])
-                    with col_img:
-                        if rec["poster_url"]:
-                            st.image(rec["poster_url"], width="stretch")
-                    with col_txt:
-                        st.markdown(f"**{i}. {rec['titulo']}**")
-                        st.caption(f"Similaridade: {rec['score']:.3f}")
-                        if rec["sinopse"]:
-                            st.write(f"*{rec['sinopse']}*")
+    if not recs:
+        st.warning("Não foi possível gerar recomendações para este filme.")
+    else:
+        st.subheader("Filmes Recomendados (Mais Similares):")
+        for i, rec in enumerate(recs, 1):
+            with st.container(border=True):
+                col_img, col_txt = st.columns([1, 3])
+                with col_img:
+                    if rec["poster_url"]:
+                        st.image(rec["poster_url"], width="stretch")
+                with col_txt:
+                    st.markdown(f"**{i}. {rec['titulo']}**")
+                    st.caption(f"Similaridade: {rec['score']:.3f}")
+                    if rec["sinopse"]:
+                        st.write(f"*{rec['sinopse']}*")
