@@ -13,3 +13,6 @@ streamlit>=1.35
 
 # --- Biblioteca de análise de dados ---
 sklearn>=1.9.1
+
+# --- P/ seletor
+streamlit-image-gallery-enhanced==1.0.1
