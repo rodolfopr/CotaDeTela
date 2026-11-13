@@ -9,6 +9,9 @@ def calcular_matriz_similaridade(caminho_parquet):
     # Remove filmes sem sinopse para evitar erros
     df = df.dropna(subset=['sinopse']).reset_index(drop=True)
     
+    # Cria a coluna padronizada de exibição (priorizando o título em português)
+    df['titulo_exibicao'] = df['titulo_ptbr'].fillna(df['titulo_original'])
+    
     print("Vetorizando as sinopses (TF-IDF)...")
     tfidf = TfidfVectorizer()
     matriz_tfidf = tfidf.fit_transform(df['sinopse'])
@@ -18,12 +21,11 @@ def calcular_matriz_similaridade(caminho_parquet):
     
     return df, matriz_similaridade
 
-def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
-    match = df[df['titulo_ptbr'].str.contains(titulo, case=False, na=False) | 
-               df['titulo_original'].str.contains(titulo, case=False, na=False)]
+def recomendar_filmes(titulo_exibicao, df, matriz_similaridade, top_n=5):
+    match = df[df['titulo_exibicao'] == titulo_exibicao]
     
     if match.empty:
-        return f"Filme '{titulo}' não encontrado."
+        return []
     
     idx = match.index[0]
     scores = list(enumerate(matriz_similaridade[idx]))
@@ -32,7 +34,17 @@ def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
     
     filmes_recomendados = []
     for i, score in scores:
-        nome = df.loc[i, 'titulo_ptbr'] if 'titulo_ptbr' in df.columns and pd.notna(df.loc[i, 'titulo_ptbr']) else df.loc[i, 'titulo_original']
-        filmes_recomendados.append((nome, score))
+        row = df.loc[i]
+        filmes_recomendados.append({
+            'titulo': row['titulo_exibicao'],
+            'sinopse': row['sinopse'],
+            'score': score
+        })
         
     return filmes_recomendados
+
+def obter_detalhes_filme(titulo_exibicao, df):
+    match = df[df['titulo_exibicao'] == titulo_exibicao]
+    if match.empty:
+        return None
+    return match.iloc[0]
