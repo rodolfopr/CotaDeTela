@@ -1,8 +1,6 @@
 """
 Recomendador de Filmes Nacionais — app Streamlit em arquivo único.
-
-Combina a lógica de recomendação (TF-IDF + similaridade de cossenos)
-e a interface Streamlit no mesmo módulo.
+Interface com galeria de capas clicável (streamlit-image-gallery-enhanced).
 """
 
 import os
@@ -11,6 +9,7 @@ import pandas as pd
 import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from streamlit_image_gallery_enhanced import streamlit_image_gallery
 
 
 # ============================================================
@@ -26,16 +25,13 @@ def _coluna_titulo_exibicao(df: pd.DataFrame) -> pd.Series:
 
 def calcular_matriz_similaridade(caminho_parquet):
     print("Lendo o arquivo parquet...")
-    # Usa o engine padrão do pandas (pyarrow), já instalado via requirements.txt
     df = pd.read_parquet(caminho_parquet)
 
-    # Remove filmes sem sinopse (NaN ou string vazia)
     df = df[
         df["sinopse"].notna()
         & (df["sinopse"].astype(str).str.strip() != "")
     ].reset_index(drop=True)
 
-    # Coluna derivada usada pelo frontend (chave de exibição)
     df["titulo_exibicao"] = _coluna_titulo_exibicao(df)
     df = df[df["titulo_exibicao"].notna()].reset_index(drop=True)
 
@@ -104,9 +100,9 @@ def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
 # Interface Streamlit
 # ============================================================
 
-st.set_page_config(page_title="Recomendador de Filmes Nacionais", layout="centered")
+st.set_page_config(page_title="Recomendador de Filmes Nacionais", layout="wide")
 st.title("Sistema de Recomendação de Filmes Nacionais")
-st.write("Descubra filmes brasileiros semelhantes com base nas sinopses!")
+st.write("Clique na capa de um filme para ver suas informações e receber recomendações similares.")
 
 
 @st.cache_data
@@ -121,24 +117,43 @@ def carregar_dados_com_cache():
 with st.spinner("Carregando base de dados e calculando similaridades..."):
     df_filmes, matriz_sim = carregar_dados_com_cache()
 
-# --- Seleção do filme ---
-titulos_disponiveis = sorted(df_filmes["titulo_exibicao"].dropna().unique())
 
-filme_selecionado = st.selectbox(
-    "Escolha um filme:",
-    options=titulos_disponiveis,
-    index=None,
-    placeholder="Digite ou selecione um filme...",
+# --- Galeria de capas clicável ---
+st.subheader("Selecione um filme pela capa")
+
+# Prepara a lista de imagens no formato exigido pelo componente.
+# O componente espera uma lista de dicts com 'src' (URL) e 'title' (texto exibido)[citation:1][citation:2].
+imagens_galeria = []
+mapa_titulos = {}  # índice da galeria -> titulo_exibicao
+
+for _, row in df_filmes.iterrows():
+    poster = row.get("poster_url")
+    # Só inclui filmes que tenham pôster, para evitar imagens quebradas na galeria
+    if pd.notna(poster) and poster:
+        titulo = row["titulo_exibicao"]
+        imagens_galeria.append({"src": poster, "title": titulo})
+        mapa_titulos[len(imagens_galeria) - 1] = titulo
+
+# Exibe a galeria (grade responsiva com hover e clique)
+# Retorna o índice (0-based) da imagem clicada ou None[citation:1][citation:2]
+indice_clicado = streamlit_image_gallery(
+    images=imagens_galeria,
+    max_cols=6,
+    gap=15,
+    max_width=1400,
+    key="galeria_filmes",
 )
 
-if st.button("Recomendar Filmes Similares", type="primary") and filme_selecionado:
-    filme_escolhido = obter_detalhes_filme(filme_selecionado, df_filmes)
+if indice_clicado is not None:
+    titulo_selecionado = mapa_titulos[indice_clicado]
+    filme_escolhido = obter_detalhes_filme(titulo_selecionado, df_filmes)
 
     if filme_escolhido is None:
         st.error("Filme não encontrado na base.")
         st.stop()
 
     # --- Filme selecionado ---
+    st.divider()
     st.subheader("Filme Selecionado")
     with st.container(border=True):
         col_img, col_txt = st.columns([1, 3])
@@ -154,26 +169,23 @@ if st.button("Recomendar Filmes Similares", type="primary") and filme_selecionad
             else:
                 st.info("Sinopse não disponível para este filme.")
 
-    st.divider()
-
     # --- Recomendações ---
     recomendacoes = recomendar_filmes(
-        filme_selecionado, df_filmes, matriz_sim, top_n=5
+        titulo_selecionado, df_filmes, matriz_sim, top_n=5
     )
 
     if not recomendacoes:
         st.warning("Não foi possível gerar recomendações para este filme.")
-        st.stop()
-
-    st.subheader("Filmes Recomendados (Mais Similares):")
-    for i, rec in enumerate(recomendacoes, 1):
-        with st.container(border=True):
-            col_img, col_txt = st.columns([1, 3])
-            with col_img:
-                if rec.get("poster_url"):
-                    st.image(rec["poster_url"], use_container_width=True)
-            with col_txt:
-                st.markdown(f"**{i}. {rec['titulo']}**")
-                st.caption(f"Índice de similaridade: {rec['score']:.3f}")
-                if rec.get("sinopse"):
-                    st.write(f"*{rec['sinopse']}*")
+    else:
+        st.subheader("Filmes Recomendados (Mais Similares):")
+        for i, rec in enumerate(recomendacoes, 1):
+            with st.container(border=True):
+                col_img, col_txt = st.columns([1, 3])
+                with col_img:
+                    if rec.get("poster_url"):
+                        st.image(rec["poster_url"], use_container_width=True)
+                with col_txt:
+                    st.markdown(f"**{i}. {rec['titulo']}**")
+                    st.caption(f"Índice de similaridade: {rec['score']:.3f}")
+                    if rec.get("sinopse"):
+                        st.write(f"*{rec['sinopse']}*")
