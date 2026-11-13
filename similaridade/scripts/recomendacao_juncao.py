@@ -4,6 +4,8 @@ Recomendador de Filmes Nacionais — app Streamlit em arquivo único.
 Consulta em texto livre com:
   - Enter dispara a busca (on_change + st.session_state)
   - Sugestões aparecem enquanto digita (live=True + filtro local)
+  - Resultado só aparece após Enter/clique em Pesquisar
+  - Similares ficam ocultos atrás do botão "Ver similares" de cada resultado
 """
 
 import os
@@ -98,11 +100,18 @@ def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
     recomendacoes = []
     for i, score in scores:
         row = df.loc[i]
+        poster = row.get("poster_url") if "poster_url" in df.columns else None
+        if pd.isna(poster) or not poster:
+            poster = None
+        sinopse = row.get("sinopse")
+        if pd.isna(sinopse) or not sinopse:
+            sinopse = None
+
         recomendacoes.append({
             "titulo": row["titulo_exibicao"],
             "score": float(score),
-            "sinopse": row.get("sinopse") if pd.notna(row.get("sinopse")) else None,
-            "poster_url": row.get("poster_url") if "poster_url" in df.columns else None,
+            "sinopse": sinopse,
+            "poster_url": poster,
         })
     return recomendacoes
 
@@ -134,11 +143,12 @@ if "pesquisar_acionado" not in st.session_state:
     st.session_state["pesquisar_acionado"] = False
 if "termo_pesquisa" not in st.session_state:
     st.session_state["termo_pesquisa"] = ""
+if "filmes_para_similares" not in st.session_state:
+    st.session_state["filmes_para_similares"] = set()
 
 
 # --- Callback: Enter no campo dispara a busca ---
 def _ao_submeter():
-    """Chamado quando o usuário pressiona Enter no text_input."""
     st.session_state["pesquisar_acionado"] = True
     st.session_state["termo_pesquisa"] = st.session_state.get("campo_busca", "")
 
@@ -152,15 +162,17 @@ with col_input:
         placeholder="Ex.: Cidade de Deus",
         label_visibility="collapsed",
         on_change=_ao_submeter,
-        live=True,  # envia o valor ao Python após pausa na digitação
+        live=True,
     )
 with col_botao:
     if st.button("Pesquisar", type="primary", width="stretch"):
         st.session_state["pesquisar_acionado"] = True
         st.session_state["termo_pesquisa"] = termo_digitado
+        # Nova pesquisa: limpa quais resultados já têm similares abertos
+        st.session_state["filmes_para_similares"] = set()
 
 
-# --- Sugestões enquanto digita (aparecem antes de pesquisar) ---
+# --- Sugestões enquanto digita (apenas preenchem o campo, NÃO buscam) ---
 if (
     not st.session_state["pesquisar_acionado"]
     and termo_digitado
@@ -171,22 +183,19 @@ if (
     sugestoes = [t for t in titulos_unicos if termo_lower in str(t).lower()][:8]
 
     if sugestoes:
-        st.caption("Sugestões — clique para pesquisar:")
+        st.caption("Sugestões — clique para preencher o campo:")
         cols_sug = st.columns(min(len(sugestoes), 4))
         for i, s in enumerate(sugestoes):
             with cols_sug[i % len(cols_sug)]:
                 if st.button(s, key=f"sug_{i}_{s}", width="stretch"):
+                    # Apenas preenche o campo; a busca só ocorre no Enter/Pesquisar
                     st.session_state["campo_busca"] = s
-                    st.session_state["termo_pesquisa"] = s
-                    st.session_state["pesquisar_acionado"] = True
                     st.rerun()
 
 
-# --- Executa a busca quando acionada ---
+# --- Executa a busca apenas quando acionada (Enter ou Pesquisar) ---
 if st.session_state["pesquisar_acionado"]:
     termo = st.session_state["termo_pesquisa"].strip() if st.session_state["termo_pesquisa"] else ""
-
-    # Reseta a flag para não repetir a busca em reruns não relacionados
     st.session_state["pesquisar_acionado"] = False
 
     if not termo:
@@ -208,11 +217,12 @@ if st.session_state["pesquisar_acionado"]:
                 st.divider()
                 st.subheader(f"Filme: {titulo}")
 
+                # --- Card do filme ---
                 with st.container(border=True):
                     col_img, col_txt = st.columns([1, 3])
                     with col_img:
                         poster = filme_escolhido.get("poster_url")
-                        if pd.notna(poster) and poster:
+                        if poster and isinstance(poster, str):
                             st.image(poster, width="stretch")
                     with col_txt:
                         st.markdown(f"### **{filme_escolhido['titulo_exibicao']}**")
@@ -222,23 +232,36 @@ if st.session_state["pesquisar_acionado"]:
                         else:
                             st.info("Sinopse não disponível para este filme.")
 
-                recomendacoes = recomendar_filmes(titulo, df_filmes, matriz_sim, top_n=5)
+                # --- Botão para ver similares ---
+                chave_botao = f"ver_similares_{titulo}"
+                if st.button("Ver similares", key=chave_botao, type="secondary"):
+                    # Alterna o estado: se já estava aberto, fecha; se não, abre
+                    if titulo in st.session_state["filmes_para_similares"]:
+                        st.session_state["filmes_para_similares"].discard(titulo)
+                    else:
+                        st.session_state["filmes_para_similares"].add(titulo)
+                    st.rerun()
 
-                if not recomendacoes:
-                    st.warning("Não foi possível gerar recomendações para este filme.")
-                else:
-                    st.markdown("**Filmes Recomendados (Mais Similares):**")
-                    for i, rec in enumerate(recomendacoes, 1):
-                        with st.container(border=True):
-                            col_img, col_txt = st.columns([1, 3])
-                            with col_img:
-                                if rec.get("poster_url"):
-                                    st.image(rec["poster_url"], width="stretch")
-                            with col_txt:
-                                st.markdown(f"**{i}. {rec['titulo']}**")
-                                st.caption(f"Índice de similaridade: {rec['score']:.3f}")
-                                if rec.get("sinopse"):
-                                    st.write(f"*{rec['sinopse']}*")
+                # --- Similares (só aparecem se o botão foi acionado) ---
+                if titulo in st.session_state["filmes_para_similares"]:
+                    recomendacoes = recomendar_filmes(titulo, df_filmes, matriz_sim, top_n=5)
+
+                    if not recomendacoes:
+                        st.warning("Não foi possível gerar recomendações para este filme.")
+                    else:
+                        st.markdown("**Filmes Recomendados (Mais Similares):**")
+                        for i, rec in enumerate(recomendacoes, 1):
+                            with st.container(border=True):
+                                col_img, col_txt = st.columns([1, 3])
+                                with col_img:
+                                    poster_rec = rec.get("poster_url")
+                                    if poster_rec and isinstance(poster_rec, str):
+                                        st.image(poster_rec, width="stretch")
+                                with col_txt:
+                                    st.markdown(f"**{i}. {rec['titulo']}**")
+                                    st.caption(f"Índice de similaridade: {rec['score']:.3f}")
+                                    if rec.get("sinopse"):
+                                        st.write(f"*{rec['sinopse']}*")
 
             if len(resultados) > 3:
                 st.caption(
