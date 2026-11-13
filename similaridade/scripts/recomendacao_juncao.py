@@ -1,6 +1,9 @@
 """
 Recomendador de Filmes Nacionais — app Streamlit em arquivo único.
-Consulta em texto livre: o usuário digita o título e clica em Pesquisar.
+
+Consulta em texto livre com:
+  - Enter dispara a busca (on_change + st.session_state)
+  - Sugestões aparecem enquanto digita (live=True + filtro local)
 """
 
 import os
@@ -46,11 +49,8 @@ def calcular_matriz_similaridade(caminho_parquet):
 
 
 def buscar_filmes(termo, df):
-    """
-    Busca por título (exibição, original e PT-BR), case-insensitive.
-    Retorna um DataFrame com as linhas que casam com o termo.
-    """
-    termo = termo.strip()
+    """Busca por título (exibição, original e PT-BR), case-insensitive."""
+    termo = (termo or "").strip()
     if not termo:
         return df.iloc[0:0]
 
@@ -66,15 +66,12 @@ def buscar_filmes(termo, df):
 
 
 def obter_detalhes_filme(titulo, df):
-    """Retorna a linha (dict) do filme cujo `titulo_exibicao` casa com `titulo`."""
     if "titulo_exibicao" not in df.columns:
         return None
-
     exato = df[df["titulo_exibicao"] == titulo]
     if not exato.empty:
         return exato.iloc[0].to_dict()
-
-    mask = df["titulo_exibicao"].astype(str).str.contains(titulo, case=False, na=False)
+    mask = df["titulo_exibicao"].astype(str).str.contains(titulo, case=False, na=False, regex=False)
     match = df[mask]
     if match.empty:
         return None
@@ -82,15 +79,13 @@ def obter_detalhes_filme(titulo, df):
 
 
 def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
-    """Retorna lista de dicts (titulo, score, sinopse, poster_url) das top_n recomendações."""
     if "titulo_exibicao" not in df.columns:
         return []
-
     exato = df[df["titulo_exibicao"] == titulo]
     if not exato.empty:
         idx = exato.index[0]
     else:
-        mask = df["titulo_exibicao"].astype(str).str.contains(titulo, case=False, na=False)
+        mask = df["titulo_exibicao"].astype(str).str.contains(titulo, case=False, na=False, regex=False)
         match = df[mask]
         if match.empty:
             return []
@@ -103,15 +98,12 @@ def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
     recomendacoes = []
     for i, score in scores:
         row = df.loc[i]
-        recomendacoes.append(
-            {
-                "titulo": row["titulo_exibicao"],
-                "score": float(score),
-                "sinopse": row.get("sinopse") if pd.notna(row.get("sinopse")) else None,
-                "poster_url": row.get("poster_url") if "poster_url" in df.columns else None,
-            }
-        )
-
+        recomendacoes.append({
+            "titulo": row["titulo_exibicao"],
+            "score": float(score),
+            "sinopse": row.get("sinopse") if pd.notna(row.get("sinopse")) else None,
+            "poster_url": row.get("poster_url") if "poster_url" in df.columns else None,
+        })
     return recomendacoes
 
 
@@ -121,7 +113,7 @@ def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
 
 st.set_page_config(page_title="Recomendador de Filmes Nacionais", layout="centered")
 st.title("Sistema de Recomendação de Filmes Nacionais")
-st.write("Digite o título de um filme brasileiro e clique em **Pesquisar** para ver os similares.")
+st.write("Digite o título de um filme brasileiro. Pressione **Enter** ou clique em **Pesquisar**.")
 
 
 @st.cache_data
@@ -137,36 +129,81 @@ with st.spinner("Carregando base de dados e calculando similaridades..."):
     df_filmes, matriz_sim = carregar_dados_com_cache()
 
 
-# --- Consulta em texto livre ---
+# --- Inicializa estado da sessão ---
+if "pesquisar_acionado" not in st.session_state:
+    st.session_state["pesquisar_acionado"] = False
+if "termo_pesquisa" not in st.session_state:
+    st.session_state["termo_pesquisa"] = ""
+
+
+# --- Callback: Enter no campo dispara a busca ---
+def _ao_submeter():
+    """Chamado quando o usuário pressiona Enter no text_input."""
+    st.session_state["pesquisar_acionado"] = True
+    st.session_state["termo_pesquisa"] = st.session_state.get("campo_busca", "")
+
+
+# --- Campo de busca com sugestões ao digitar ---
 col_input, col_botao = st.columns([4, 1])
 with col_input:
-    termo_pesquisa = st.text_input(
+    termo_digitado = st.text_input(
         "Título do filme:",
+        key="campo_busca",
         placeholder="Ex.: Cidade de Deus",
         label_visibility="collapsed",
+        on_change=_ao_submeter,
+        live=True,  # envia o valor ao Python após pausa na digitação
     )
 with col_botao:
-    pesquisar = st.button("Pesquisar", type="primary", use_container_width=True)
+    if st.button("Pesquisar", type="primary", use_container_width=True):
+        st.session_state["pesquisar_acionado"] = True
+        st.session_state["termo_pesquisa"] = termo_digitado
 
-# A busca só acontece quando o botão é acionado
-if pesquisar:
-    if not termo_pesquisa or not termo_pesquisa.strip():
+
+# --- Sugestões enquanto digita (aparecem antes de pesquisar) ---
+# Só mostra sugestões se o usuário ainda não acionou a busca e digitou ao menos 2 caracteres.
+if (
+    not st.session_state["pesquisar_acionado"]
+    and termo_digitado
+    and len(termo_digitado.strip()) >= 2
+):
+    termo_lower = termo_digitado.strip().lower()
+    titulos_unicos = df_filmes["titulo_exibicao"].dropna().unique()
+    sugestoes = [t for t in titulos_unicos if termo_lower in str(t).lower()][:8]
+
+    if sugestoes:
+        st.caption("Sugestões — clique para pesquisar:")
+        # Exibe as sugestões em colunas horizontais para não ocupar muito espaço
+        cols_sug = st.columns(min(len(sugestoes), 4))
+        for i, s in enumerate(sugestoes):
+            with cols_sug[i % len(cols_sug)]:
+                if st.button(s, key=f"sug_{i}_{s}", use_container_width=True):
+                    st.session_state["campo_busca"] = s
+                    st.session_state["termo_pesquisa"] = s
+                    st.session_state["pesquisar_acionado"] = True
+                    st.rerun()
+
+
+# --- Executa a busca quando acionada ---
+if st.session_state["pesquisar_acionado"]:
+    termo = st.session_state["termo_pesquisa"].strip() if st.session_state["termo_pesquisa"] else ""
+
+    # Reseta a flag para não repetir a busca em reruns não relacionados
+    st.session_state["pesquisar_acionado"] = False
+
+    if not termo:
         st.warning("Digite um título para pesquisar.")
     else:
-        resultados = buscar_filmes(termo_pesquisa, df_filmes)
+        resultados = buscar_filmes(termo, df_filmes)
 
         if resultados.empty:
-            st.info(f"Nenhum filme encontrado para **'{termo_pesquisa.strip()}'**.")
+            st.info(f"Nenhum filme encontrado para **'{termo}'**.")
         else:
-            # Se houver mais de um resultado, mostra todos; se houver só um, já exibe direto
-            st.success(f"{len(resultados)} filme(s) encontrado(s) para **'{termo_pesquisa.strip()}'**.")
+            st.success(f"{len(resultados)} filme(s) encontrado(s) para **'{termo}'**.")
 
-            # Para cada resultado, exibe o card do filme + suas recomendações
-            # (limitado a 3 resultados para não sobrecarregar a tela)
             for _, row in resultados.head(3).iterrows():
                 titulo = row["titulo_exibicao"]
                 filme_escolhido = obter_detalhes_filme(titulo, df_filmes)
-
                 if filme_escolhido is None:
                     continue
 
@@ -205,7 +242,6 @@ if pesquisar:
                                 if rec.get("sinopse"):
                                     st.write(f"*{rec['sinopse']}*")
 
-            # Aviso se houver mais resultados do que os exibidos
             if len(resultados) > 3:
                 st.caption(
                     f"Mostrando os 3 primeiros de {len(resultados)} resultados. "
