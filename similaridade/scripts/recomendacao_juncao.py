@@ -1,6 +1,6 @@
 """
 Recomendador de Filmes Nacionais — app Streamlit em arquivo único.
-Usa apenas recursos nativos do Streamlit para a galeria de capas.
+Interface com galeria de capas clicável (streamlit-image-gallery-enhanced).
 """
 
 import os
@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from streamlit_image_gallery_enhanced import streamlit_image_gallery
 
 
 # ============================================================
@@ -101,7 +102,7 @@ def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
 
 st.set_page_config(page_title="Recomendador de Filmes Nacionais", layout="wide")
 st.title("Sistema de Recomendação de Filmes Nacionais")
-st.write("Clique em **Selecionar** na capa de um filme para ver suas informações e receber recomendações similares.")
+st.write("Clique na capa de um filme para ver suas informações e receber recomendações similares.")
 
 
 @st.cache_data
@@ -117,78 +118,43 @@ with st.spinner("Carregando base de dados e calculando similaridades..."):
     df_filmes, matriz_sim = carregar_dados_com_cache()
 
 
-# --- Inicializa estado da sessão para o filme selecionado ---
-if "filme_selecionado" not in st.session_state:
-    st.session_state["filme_selecionado"] = None
-
-
-# ============================================================
-# Galeria de capas com recursos nativos
-# ============================================================
-
+# --- Galeria de capas clicável ---
 st.subheader("Selecione um filme pela capa")
 
-# Filtra apenas filmes com pôster para evitar imagens quebradas
-filmes_com_poster = df_filmes[df_filmes["poster_url"].notna()].copy()
+# Prepara a lista de imagens no formato exigido pelo componente.
+# O componente espera uma lista de dicts com 'src' (URL) e 'title' (texto exibido).
+imagens_galeria = []
+mapa_titulos = {}  # índice da galeria -> titulo_exibicao
 
-# Paginação simples: mostra 24 filmes por página (6 colunas x 4 linhas)
-FILMES_POR_PAGINA = 24
-total_paginas = max(1, (len(filmes_com_poster) + FILMES_POR_PAGINA - 1) // FILMES_POR_PAGINA)
+for _, row in df_filmes.iterrows():
+    poster = row.get("poster_url")
+    # Só inclui filmes que tenham pôster, para evitar imagens quebradas na galeria
+    if pd.notna(poster) and poster:
+        titulo = row["titulo_exibicao"]
+        imagens_galeria.append({"src": poster, "title": titulo})
+        mapa_titulos[len(imagens_galeria) - 1] = titulo
 
-# Controle de página no estado da sessão
-if "pagina_galeria" not in st.session_state:
-    st.session_state["pagina_galeria"] = 0
+# Exibe a galeria (grade responsiva com hover e clique)
+# Retorna o índice (0-based) da imagem clicada ou None
+indice_clicado = streamlit_image_gallery(
+    images=imagens_galeria,
+    max_cols=6,
+    gap=15,
+    max_width=1400,
+    key="galeria_filmes",
+)
 
-pagina_atual = st.session_state["pagina_galeria"]
-inicio = pagina_atual * FILMES_POR_PAGINA
-fim = inicio + FILMES_POR_PAGINA
-filmes_pagina = filmes_com_poster.iloc[inicio:fim]
-
-# Exibe a grade de capas
-cols = st.columns(6)
-for i, (_, row) in enumerate(filmes_pagina.iterrows()):
-    with cols[i % 6]:
-        st.image(row["poster_url"], use_container_width=True)
-        # Botão ocupa a largura da coluna e tem chave única por título
-        if st.button(
-            "Selecionar",
-            key=f"sel_{row['titulo_exibicao']}",
-            use_container_width=True,
-        ):
-            st.session_state["filme_selecionado"] = row["titulo_exibicao"]
-            st.rerun()
-
-# Navegação entre páginas
-if total_paginas > 1:
-    col_prev, col_info, col_next = st.columns([1, 2, 1])
-    with col_prev:
-        if st.button("⬅️ Anterior", disabled=(pagina_atual == 0)):
-            st.session_state["pagina_galeria"] -= 1
-            st.rerun()
-    with col_info:
-        st.caption(f"Página {pagina_atual + 1} de {total_paginas} — "
-                   f"{len(filmes_pagina)} de {len(filmes_com_poster)} filmes com capa")
-    with col_next:
-        if st.button("Próxima ➡️", disabled=(pagina_atual >= total_paginas - 1)):
-            st.session_state["pagina_galeria"] += 1
-            st.rerun()
-
-
-# ============================================================
-# Detalhes do filme selecionado + recomendações
-# ============================================================
-
-if st.session_state["filme_selecionado"]:
-    titulo_selecionado = st.session_state["filme_selecionado"]
+if indice_clicado is not None:
+    titulo_selecionado = mapa_titulos[indice_clicado]
     filme_escolhido = obter_detalhes_filme(titulo_selecionado, df_filmes)
 
     if filme_escolhido is None:
         st.error("Filme não encontrado na base.")
         st.stop()
 
+    # --- Filme selecionado ---
     st.divider()
     st.subheader("Filme Selecionado")
-
     with st.container(border=True):
         col_img, col_txt = st.columns([1, 3])
         with col_img:
