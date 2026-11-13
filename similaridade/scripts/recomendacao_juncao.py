@@ -1,10 +1,6 @@
 """
 Recomendador de Filmes Nacionais — app Streamlit em arquivo único.
-Interface com galeria de capas clicável usando recursos nativos + CSS.
-
-A "camada invisível" é um st.button transparente posicionado sobre a capa
-via margin-top negativo. Como botão e imagem estão no mesmo documento
-(sem iframe), o clique na capa é capturado pelo botão.
+Galeria de capas em uma linha, com botão transparente sobreposto e paginação.
 """
 
 import os
@@ -20,7 +16,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 # ============================================================
 
 def _coluna_titulo_exibicao(df: pd.DataFrame) -> pd.Series:
-    """PT-BR quando disponível, senão o título original."""
     ptbr = df["titulo_ptbr"] if "titulo_ptbr" in df.columns else pd.Series([None] * len(df))
     original = df["titulo_original"] if "titulo_original" in df.columns else pd.Series([None] * len(df))
     return ptbr.where(ptbr.notna() & (ptbr.astype(str).str.strip() != ""), original)
@@ -50,14 +45,11 @@ def calcular_matriz_similaridade(caminho_parquet):
 
 
 def obter_detalhes_filme(titulo, df):
-    """Retorna a linha (dict) do filme cujo `titulo_exibicao` casa com `titulo`."""
     if "titulo_exibicao" not in df.columns:
         return None
-
     exato = df[df["titulo_exibicao"] == titulo]
     if not exato.empty:
         return exato.iloc[0].to_dict()
-
     mask = df["titulo_exibicao"].astype(str).str.contains(titulo, case=False, na=False)
     match = df[mask]
     if match.empty:
@@ -66,10 +58,8 @@ def obter_detalhes_filme(titulo, df):
 
 
 def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
-    """Retorna lista de dicts (titulo, score, sinopse, poster_url) das top_n recomendações."""
     if "titulo_exibicao" not in df.columns:
         return []
-
     exato = df[df["titulo_exibicao"] == titulo]
     if not exato.empty:
         idx = exato.index[0]
@@ -87,15 +77,12 @@ def recomendar_filmes(titulo, df, matriz_similaridade, top_n=5):
     recomendacoes = []
     for i, score in scores:
         row = df.loc[i]
-        recomendacoes.append(
-            {
-                "titulo": row["titulo_exibicao"],
-                "score": float(score),
-                "sinopse": row.get("sinopse") if pd.notna(row.get("sinopse")) else None,
-                "poster_url": row.get("poster_url") if "poster_url" in df.columns else None,
-            }
-        )
-
+        recomendacoes.append({
+            "titulo": row["titulo_exibicao"],
+            "score": float(score),
+            "sinopse": row.get("sinopse") if pd.notna(row.get("sinopse")) else None,
+            "poster_url": row.get("poster_url") if "poster_url" in df.columns else None,
+        })
     return recomendacoes
 
 
@@ -111,9 +98,7 @@ st.write("Clique na capa de um filme para ver suas informações e receber recom
 @st.cache_data
 def carregar_dados_com_cache():
     diretorio_atual = os.path.dirname(os.path.abspath(__file__))
-    caminho_arquivo = os.path.join(
-        diretorio_atual, "..", "data", "filmes_nacionais_enriquecidos.parquet"
-    )
+    caminho_arquivo = os.path.join(diretorio_atual, "..", "data", "filmes_nacionais_enriquecidos.parquet")
     return calcular_matriz_similaridade(caminho_arquivo)
 
 
@@ -121,37 +106,65 @@ with st.spinner("Carregando base de dados e calculando similaridades..."):
     df_filmes, matriz_sim = carregar_dados_com_cache()
 
 
-# --- CSS do botão transparente sobre a capa ---
-# O botão fica com fundo transparente e é puxado para cima da imagem com
-# margin-top negativo, cobrindo a área da capa. z-index garante que ele
-# receba o clique.
+# ============================================================
+# CSS: botão transparente ancorado sobre a capa
+# ============================================================
+# Estratégia: cada célula da galeria é um bloco relativo. A imagem é
+# desenhada; o botão é posicionado com position:absolute cobrindo 100%
+# da largura e da altura da imagem. Assim o clique atinge toda a capa,
+# independentemente da proporção do pôster.
+#
+# A altura da imagem é fixada em 240px (proporção ~2:3 de pôster),
+# então o botão cobre exatamente essa área.
 st.markdown(
     """
     <style>
-    /* Container do botão: sobe sobre a imagem e ocupa a largura */
-    div[data-testid="stButton"] {
+    /* Cada coluna da galeria vira um container relativo */
+    div[data-testid="column"] {
         position: relative;
-        margin-top: -170px;   /* altura aproximada da capa + margem */
-        z-index: 10;
     }
-    /* Botão transparente */
-    div[data-testid="stButton"] > button {
+
+    /* A imagem da capa tem altura fixa para o cálculo do overlay */
+    div[data-testid="column"] img {
+        height: 240px !important;
+        width: 100% !important;
+        object-fit: cover !important;
+        border-radius: 6px;
+    }
+
+    /* O botão é absoluto, cobrindo exatamente a área da imagem */
+    div[data-testid="column"] div[data-testid="stButton"] {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 240px;
+        z-index: 10;
+        margin: 0;
+        padding: 0;
+    }
+
+    /* Botão invisível, mas clicável */
+    div[data-testid="column"] div[data-testid="stButton"] > button {
         background: transparent;
         border: none;
         color: transparent;
-        height: 160px;
         width: 100%;
+        height: 100%;
         cursor: pointer;
         transition: background 0.2s ease;
+        padding: 0;
+        margin: 0;
     }
-    /* Feedback visual sutil ao passar o mouse */
-    div[data-testid="stButton"] > button:hover {
-        background: rgba(0, 120, 255, 0.15);
+
+    /* Feedback sutil no hover */
+    div[data-testid="column"] div[data-testid="stButton"] > button:hover {
+        background: rgba(0, 120, 255, 0.18);
         border: none;
         color: transparent;
     }
-    /* Remove o foco azul padrão */
-    div[data-testid="stButton"] > button:focus {
+
+    div[data-testid="column"] div[data-testid="stButton"] > button:focus {
         box-shadow: none;
         border: none;
     }
@@ -161,62 +174,67 @@ st.markdown(
 )
 
 
-# --- Inicializa estado da sessão para o filme selecionado ---
+# --- Estado da sessão ---
 if "filme_selecionado" not in st.session_state:
     st.session_state["filme_selecionado"] = None
+if "pagina_galeria" not in st.session_state:
+    st.session_state["pagina_galeria"] = 0
 
 
 # ============================================================
-# Galeria de capas com botão transparente
+# Galeria: uma linha de capas + paginação
 # ============================================================
 
 st.subheader("Selecione um filme pela capa")
 
-filmes_com_poster = df_filmes[df_filmes["poster_url"].notna()].copy()
+filmes_com_poster = df_filmes[df_filmes["poster_url"].notna()].copy().reset_index(drop=True)
 
-# Paginação: 24 filmes por página (6 colunas x 4 linhas)
-FILMES_POR_PAGINA = 24
-total_paginas = max(1, (len(filmes_com_poster) + FILMES_POR_PAGINA - 1) // FILMES_POR_PAGINA)
+CAPAS_POR_PAGINA = 6  # uma linha de 6 capas
+total_paginas = max(1, (len(filmes_com_poster) + CAPAS_POR_PAGINA - 1) // CAPAS_POR_PAGINA)
 
-if "pagina_galeria" not in st.session_state:
+# Garante que a página atual está dentro dos limites
+if st.session_state["pagina_galeria"] >= total_paginas:
+    st.session_state["pagina_galeria"] = total_paginas - 1
+if st.session_state["pagina_galeria"] < 0:
     st.session_state["pagina_galeria"] = 0
 
 pagina_atual = st.session_state["pagina_galeria"]
-inicio = pagina_atual * FILMES_POR_PAGINA
-fim = inicio + FILMES_POR_PAGINA
+inicio = pagina_atual * CAPAS_POR_PAGINA
+fim = inicio + CAPAS_POR_PAGINA
 filmes_pagina = filmes_com_poster.iloc[inicio:fim]
 
-cols = st.columns(6)
+# Uma linha de 6 colunas
+cols = st.columns(CAPAS_POR_PAGINA)
 for i, (_, row) in enumerate(filmes_pagina.iterrows()):
-    with cols[i % 6]:
+    with cols[i]:
+        # Imagem (altura fixada pelo CSS em 240px)
         st.image(row["poster_url"], use_container_width=True)
-        # Botão transparente sobreposto à imagem (CSS acima)
-        if st.button(
-            "Selecionar",
-            key=f"sel_{row['titulo_exibicao']}",
-            use_container_width=True,
-        ):
+        # Botão transparente sobreposto (CSS posiciona por cima da imagem)
+        if st.button(" ", key=f"sel_{row['titulo_exibicao']}_{i}"):
             st.session_state["filme_selecionado"] = row["titulo_exibicao"]
             st.rerun()
-        # Título abaixo da capa (fora da área do botão)
+        # Título abaixo, fora da área do botão
         st.caption(row["titulo_exibicao"])
 
-# Navegação entre páginas
-if total_paginas > 1:
-    col_prev, col_info, col_next = st.columns([1, 2, 1])
-    with col_prev:
-        if st.button("⬅️ Anterior", disabled=(pagina_atual == 0)):
-            st.session_state["pagina_galeria"] -= 1
-            st.rerun()
-    with col_info:
-        st.caption(
-            f"Página {pagina_atual + 1} de {total_paginas} — "
-            f"{len(filmes_pagina)} de {len(filmes_com_poster)} filmes com capa"
-        )
-    with col_next:
-        if st.button("Próxima ➡️", disabled=(pagina_atual >= total_paginas - 1)):
-            st.session_state["pagina_galeria"] += 1
-            st.rerun()
+# Controle de páginas
+st.write("")  # respiro
+col_prev, col_info, col_next = st.columns([1, 3, 1])
+with col_prev:
+    if st.button("⬅️ Anterior", disabled=(pagina_atual == 0), use_container_width=True):
+        st.session_state["pagina_galeria"] -= 1
+        st.rerun()
+with col_info:
+    st.markdown(
+        f"<div style='text-align:center; padding-top:8px;'>"
+        f"Página <b>{pagina_atual + 1}</b> de <b>{total_paginas}</b> — "
+        f"{len(filmes_pagina)} de {len(filmes_com_poster)} filmes com capa"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+with col_next:
+    if st.button("Próxima ➡️", disabled=(pagina_atual >= total_paginas - 1), use_container_width=True):
+        st.session_state["pagina_galeria"] += 1
+        st.rerun()
 
 
 # ============================================================
@@ -248,10 +266,7 @@ if st.session_state["filme_selecionado"]:
             else:
                 st.info("Sinopse não disponível para este filme.")
 
-    # --- Recomendações ---
-    recomendacoes = recomendar_filmes(
-        titulo_selecionado, df_filmes, matriz_sim, top_n=5
-    )
+    recomendacoes = recomendar_filmes(titulo_selecionado, df_filmes, matriz_sim, top_n=5)
 
     if not recomendacoes:
         st.warning("Não foi possível gerar recomendações para este filme.")
