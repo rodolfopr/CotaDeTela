@@ -155,13 +155,12 @@ with col_input:
         live=True,  # envia o valor ao Python após pausa na digitação
     )
 with col_botao:
-    if st.button("Pesquisar", type="primary", use_container_width=True):
+    if st.button("Pesquisar", type="primary", width="stretch"):
         st.session_state["pesquisar_acionado"] = True
         st.session_state["termo_pesquisa"] = termo_digitado
 
 
 # --- Sugestões enquanto digita (aparecem antes de pesquisar) ---
-# Só mostra sugestões se o usuário ainda não acionou a busca e digitou ao menos 2 caracteres.
 if (
     not st.session_state["pesquisar_acionado"]
     and termo_digitado
@@ -173,11 +172,10 @@ if (
 
     if sugestoes:
         st.caption("Sugestões — clique para pesquisar:")
-        # Exibe as sugestões em colunas horizontais para não ocupar muito espaço
         cols_sug = st.columns(min(len(sugestoes), 4))
         for i, s in enumerate(sugestoes):
             with cols_sug[i % len(cols_sug)]:
-                if st.button(s, key=f"sug_{i}_{s}", use_container_width=True):
+                if st.button(s, key=f"sug_{i}_{s}", width="stretch"):
                     st.session_state["campo_busca"] = s
                     st.session_state["termo_pesquisa"] = s
                     st.session_state["pesquisar_acionado"] = True
@@ -215,7 +213,7 @@ if st.session_state["pesquisar_acionado"]:
                     with col_img:
                         poster = filme_escolhido.get("poster_url")
                         if pd.notna(poster) and poster:
-                            st.image(poster, use_container_width=True)
+                            st.image(poster, width="stretch")
                     with col_txt:
                         st.markdown(f"### **{filme_escolhido['titulo_exibicao']}**")
                         sinopse_original = filme_escolhido.get("sinopse")
@@ -235,7 +233,7 @@ if st.session_state["pesquisar_acionado"]:
                             col_img, col_txt = st.columns([1, 3])
                             with col_img:
                                 if rec.get("poster_url"):
-                                    st.image(rec["poster_url"], use_container_width=True)
+                                    st.image(rec["poster_url"], width="stretch")
                             with col_txt:
                                 st.markdown(f"**{i}. {rec['titulo']}**")
                                 st.caption(f"Índice de similaridade: {rec['score']:.3f}")
